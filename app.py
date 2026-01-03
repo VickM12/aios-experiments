@@ -423,10 +423,48 @@ class TelemetryApp:
                 mem = data.get('memory', {}).get('virtual_memory', {}).get('percent', 0)
                 disk = data.get('disk', {}).get('disk_usage', {}).get('percent', 0)
                 
-                print(f"\r[{datetime.now().strftime('%H:%M:%S')}] "
-                      f"CPU: {cpu:5.1f}% | "
-                      f"Memory: {mem:5.1f}% | "
-                      f"Disk: {disk:5.1f}%", end='', flush=True)
+                # Get fan speeds
+                fan_info = []
+                fans_data = data.get('fans', {})
+                if isinstance(fans_data, dict) and 'message' not in fans_data:
+                    for sensor_name, fan_list in fans_data.items():
+                        if sensor_name.startswith('_') or sensor_name.endswith('_error'):
+                            continue
+                        if isinstance(fan_list, list):
+                            for fan in fan_list[:2]:  # Show first 2 fans per sensor
+                                if 'rpm' in fan:
+                                    fan_info.append(f"{fan.get('label', 'Fan')}: {fan['rpm']} RPM")
+                                elif 'current' in fan:
+                                    fan_info.append(f"{fan.get('label', 'Fan')}: {fan['current']}")
+                
+                # Get power usage
+                power_data = data.get('power', {})
+                power_info = []
+                if 'gpu' in power_data and isinstance(power_data['gpu'], list):
+                    for gpu in power_data['gpu']:
+                        if 'power_draw_watts' in gpu and gpu['power_draw_watts']:
+                            power_info.append(f"GPU: {gpu['power_draw_watts']:.1f}W")
+                if 'rapl' in power_data:
+                    # Show package power if available
+                    for domain, pwr in power_data['rapl'].items():
+                        if 'package' in domain.lower():
+                            power_info.append(f"CPU: {pwr.get('energy_joules', 0):.1f}J")
+                
+                # Build display string
+                display_parts = [
+                    f"[{datetime.now().strftime('%H:%M:%S')}]",
+                    f"CPU: {cpu:5.1f}%",
+                    f"Mem: {mem:5.1f}%",
+                    f"Disk: {disk:5.1f}%"
+                ]
+                
+                if fan_info:
+                    display_parts.append(f"| {' | '.join(fan_info[:2])}")
+                
+                if power_info:
+                    display_parts.append(f"| {' | '.join(power_info[:2])}")
+                
+                print(f"\r{' | '.join(display_parts)}", end='', flush=True)
                 
                 time.sleep(interval)
             

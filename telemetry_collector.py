@@ -99,36 +99,282 @@ class TelemetryCollector:
         return temps
     
     def get_fan_sensors(self) -> Dict[str, Any]:
-        """Collect fan sensor data"""
+        """Collect fan sensor data from multiple sources"""
         fans = {}
+        detection_methods = []
+        
+        # Try psutil first
         try:
             if hasattr(psutil, "sensors_fans"):
                 fan_data = psutil.sensors_fans()
-                for name, entries in fan_data.items():
-                    fans[name] = [
-                        {
-                            'label': entry.label,
-                            'current': entry.current,
-                        }
-                        for entry in entries
-                    ]
+                if fan_data:
+                    for name, entries in fan_data.items():
+                        fans[name] = [
+                            {
+                                'label': entry.label,
+                                'current': entry.current,
+                            }
+                            for entry in entries
+                        ]
+                    detection_methods.append('psutil')
         except Exception as e:
-            fans['error'] = str(e)
-        return fans
+            fans['psutil_error'] = str(e)
+        
+        # Also check /sys/class/hwmon/ directly for more fan data
+        try:
+            import glob
+            hwmon_paths = glob.glob('/sys/class/hwmon/hwmon*/fan*_input')
+            
+            for fan_path in hwmon_paths:
+                try:
+                    # Get fan number and hwmon name
+                    hwmon_dir = '/'.join(fan_path.split('/')[:-1])
+                    hwmon_name_path = os.path.join(hwmon_dir, 'name')
+                    fan_num = fan_path.split('_')[0].split('fan')[-1]
+                    
+                    # Read fan speed
+                    with open(fan_path, 'r') as f:
+                        fan_rpm = int(f.read().strip())
+                    
+                    # Get hwmon name
+                    hwmon_name = 'unknown'
+                    if os.path.exists(hwmon_name_path):
+                        with open(hwmon_name_path, 'r') as f:
+                            hwmon_name = f.read().strip()
+                    
+                    # Get fan label if available
+                    fan_label_path = os.path.join(hwmon_dir, f'fan{fan_num}_label')
+                    fan_label = f'fan{fan_num}'
+                    if os.path.exists(fan_label_path):
+                        with open(fan_label_path, 'r') as f:
+                            fan_label = f.read().strip()
+                    
+                    # Get max speed if available
+                    fan_max_path = os.path.join(hwmon_dir, f'fan{fan_num}_max')
+                    fan_max = None
+                    if os.path.exists(fan_max_path):
+                        with open(fan_max_path, 'r') as f:
+                            fan_max = int(f.read().strip())
+                    
+                    # Store fan data
+                    if hwmon_name not in fans:
+                        fans[hwmon_name] = []
+                    
+                    fan_info = {
+                        'label': fan_label,
+                        'rpm': fan_rpm,
+                    }
+                    if fan_max:
+                        fan_info['max_rpm'] = fan_max
+                        fan_info['percent'] = round((fan_rpm / fan_max) * 100, 1) if fan_max > 0 else 0
+                    
+                    fans[hwmon_name].append(fan_info)
+                    detection_methods.append('hwmon')
+                except (ValueError, IOError, PermissionError):
+                    pass
+        except Exception as e:
+            fans['hwmon_error'] = str(e)
+        
+        # Try sensors command as fallback
+        try:
+            result = subprocess.run(
+                ['sensors'],
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
+            if result.returncode == 0:
+                # Parse fan speeds from sensors output
+                for line in result.stdout.split('\n'):
+                    if 'fan' in line.lower() and 'rpm' in line.lower():
+                        # Extract fan info
+                        parts = line.split(':')
+                        if len(parts) == 2:
+                            fan_name = parts[0].strip()
+                            fan_value = parts[1].strip()
+                            # Extract RPM number
+                            import re
+                            rpm_match = re.search(r'(\d+)\s*RPM', fan_value, re.IGNORECASE)
+                            if rpm_match:
+                                if 'sensors' not in fans:
+                                    fans['sensors'] = []
+                                fans['sensors'].append({
+                                    'label': fan_name,
+                                    'rpm': int(rpm_match.group(1)),
+                                    'raw': fan_value
+                                })
+                                detection_methods.append('sensors_command')
+        except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
+            pass
+        
+        # Return results
+        if fans and not any(key.endswith('_error') for key in fans.keys()):
+            if detection_methods:
+                fans['_detection_methods'] = detection_methods
+            return fans
+        else:
+            # No fans found - return informative message
+            return {
+                'message': 'No fan sensors found',
+                'checked_methods': ['psutil', 'hwmon', 'sensors_command'],
+                'note': 'Fans may be controlled by BIOS/EC and not exposed via standard Linux interfaces. This is common on laptops and some desktops.'
+            }
     
     def get_battery_info(self) -> Dict[str, Any]:
         """Collect battery telemetry data"""
+        battery_info = {}
         try:
             battery = psutil.sensors_battery()
             if battery:
-                return {
+                battery_info = {
                     'percent': battery.percent,
                     'secsleft': battery.secsleft,
                     'power_plugged': battery.power_plugged,
                 }
         except Exception:
             pass
-        return {}
+        
+        # Also check /sys/class/power_supply/ for more detailed battery info
+        try:
+            import glob
+            battery_paths = glob.glob('/sys/class/power_supply/BAT*/')
+            
+            for bat_path in battery_paths:
+                bat_name = os.path.basename(bat_path.rstrip('/'))
+                bat_data = {}
+                
+                # Read various battery attributes
+                attrs = ['capacity', 'energy_now', 'energy_full', 'power_now', 
+                        'voltage_now', 'current_now', 'status']
+                
+                for attr in attrs:
+                    attr_path = os.path.join(bat_path, attr)
+                    if os.path.exists(attr_path):
+                        try:
+                            with open(attr_path, 'r') as f:
+                                value = f.read().strip()
+                                # Convert to numeric if possible
+                                try:
+                                    if 'now' in attr or 'full' in attr:
+                                        # These are in micro-wh or micro-ah
+                                        bat_data[attr] = int(value) / 1_000_000  # Convert to Wh/Ah
+                                    else:
+                                        bat_data[attr] = int(value) if value.isdigit() else value
+                                except ValueError:
+                                    bat_data[attr] = value
+                        except (IOError, PermissionError):
+                            pass
+                
+                if bat_data:
+                    battery_info[bat_name] = bat_data
+        except Exception:
+            pass
+        
+        return battery_info
+    
+    def get_power_usage(self) -> Dict[str, Any]:
+        """Collect power usage information from various sources"""
+        power_info = {}
+        
+        # 1. RAPL (Intel Running Average Power Limit) - CPU power
+        try:
+            import glob
+            rapl_paths = glob.glob('/sys/devices/virtual/powercap/intel-rapl/intel-rapl:*/energy_uj')
+            
+            rapl_power = {}
+            for rapl_path in rapl_paths:
+                try:
+                    # Get domain name
+                    domain_path = os.path.join(os.path.dirname(rapl_path), 'name')
+                    domain_name = 'unknown'
+                    if os.path.exists(domain_path):
+                        with open(domain_path, 'r') as f:
+                            domain_name = f.read().strip()
+                    
+                    # Read energy (in microjoules)
+                    with open(rapl_path, 'r') as f:
+                        energy_uj = int(f.read().strip())
+                    
+                    # Convert to Joules
+                    rapl_power[domain_name] = {
+                        'energy_joules': energy_uj / 1_000_000,
+                        'energy_uj': energy_uj,
+                    }
+                except (ValueError, IOError, PermissionError):
+                    pass
+            
+            if rapl_power:
+                power_info['rapl'] = rapl_power
+        except Exception:
+            pass
+        
+        # 2. Power supply information
+        try:
+            import glob
+            psu_paths = glob.glob('/sys/class/power_supply/*/')
+            
+            for psu_path in psu_paths:
+                psu_name = os.path.basename(psu_path.rstrip('/'))
+                
+                # Skip batteries (already handled)
+                if psu_name.startswith('BAT'):
+                    continue
+                
+                psu_data = {}
+                
+                # Read power-related attributes
+                attrs = ['power_now', 'current_now', 'voltage_now', 'energy_now', 
+                        'energy_full', 'type', 'online', 'status']
+                
+                for attr in attrs:
+                    attr_path = os.path.join(psu_path, attr)
+                    if os.path.exists(attr_path):
+                        try:
+                            with open(attr_path, 'r') as f:
+                                value = f.read().strip()
+                                # Convert to numeric if possible
+                                try:
+                                    if 'now' in attr or 'full' in attr:
+                                        # These are in micro-units
+                                        psu_data[attr] = int(value) / 1_000_000
+                                    elif attr in ['online']:
+                                        psu_data[attr] = value == '1'
+                                    else:
+                                        psu_data[attr] = int(value) if value.isdigit() else value
+                                except ValueError:
+                                    psu_data[attr] = value
+                        except (IOError, PermissionError):
+                            pass
+                
+                if psu_data:
+                    power_info['power_supplies'] = power_info.get('power_supplies', {})
+                    power_info['power_supplies'][psu_name] = psu_data
+        except Exception:
+            pass
+        
+        # 3. Try nvidia-smi for GPU power (if NVIDIA GPU)
+        try:
+            result = subprocess.run(
+                ['nvidia-smi', '--query-gpu=power.draw,power.limit', '--format=csv,noheader,nounits'],
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
+            if result.returncode == 0:
+                gpu_power = []
+                for line in result.stdout.strip().split('\n'):
+                    parts = [p.strip() for p in line.split(',')]
+                    if len(parts) >= 2:
+                        gpu_power.append({
+                            'power_draw_watts': float(parts[0]) if parts[0] else None,
+                            'power_limit_watts': float(parts[1]) if parts[1] else None,
+                        })
+                if gpu_power:
+                    power_info['gpu'] = gpu_power
+        except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
+            pass
+        
+        return power_info if power_info else {'message': 'No power usage data available'}
     
     def get_process_metrics(self) -> Dict[str, Any]:
         """Collect process-related metrics"""
@@ -404,6 +650,7 @@ class TelemetryCollector:
             'temperature': self.get_temperature_sensors(),
             'fans': self.get_fan_sensors(),
             'battery': self.get_battery_info(),
+            'power': self.get_power_usage(),
             'processes': self.get_process_metrics(),
         }
     
