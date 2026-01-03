@@ -20,12 +20,130 @@ class TelemetryApp:
         self.visualizer = TelemetryVisualizer()
         self.telemetry_history = []
     
-    def collect_sample(self, duration: int = 60, interval: float = 1.0):
+    def collect_sample(self, duration: int = 60, interval: float = 1.0, include_system_info: bool = True):
         """Collect telemetry samples"""
         print(f"Collecting telemetry data for {duration} seconds (interval: {interval}s)...")
+        
+        # Collect system info once at the start
+        if include_system_info:
+            print("Gathering system information...")
+            system_info = self.collector.get_system_info()
+            self._system_info = system_info
+        
+        # Collect continuous telemetry
         self.telemetry_history = self.collector.collect_continuous(duration, interval)
+        
+        # Add system info to first data point if collected
+        if include_system_info and self.telemetry_history and hasattr(self, '_system_info'):
+            self.telemetry_history[0]['system_info'] = self._system_info
+        
         print(f"Collected {len(self.telemetry_history)} data points")
         return self.telemetry_history
+    
+    def display_system_info(self):
+        """Display detailed system information"""
+        if not hasattr(self, '_system_info'):
+            print("Collecting system information...")
+            self._system_info = self.collector.get_system_info()
+        
+        info = self._system_info
+        print("\n" + "="*60)
+        print("SYSTEM INFORMATION")
+        print("="*60)
+        
+        # OS Info
+        if 'os' in info:
+            os_info = info['os']
+            print("\n🖥️  OPERATING SYSTEM")
+            print("-" * 60)
+            print(f"   System: {os_info.get('system', 'Unknown')}")
+            print(f"   Release: {os_info.get('release', 'Unknown')}")
+            print(f"   Version: {os_info.get('version', 'Unknown')[:80]}")
+            print(f"   Machine: {os_info.get('machine', 'Unknown')}")
+            print(f"   Processor: {os_info.get('processor', 'Unknown')[:60]}")
+        
+        # CPU Info
+        if 'cpu' in info:
+            cpu_info = info['cpu']
+            print("\n🔧 CPU")
+            print("-" * 60)
+            if 'model' in cpu_info:
+                print(f"   Model: {cpu_info['model']}")
+            if 'vendor' in cpu_info:
+                print(f"   Vendor: {cpu_info['vendor']}")
+            print(f"   Physical Cores: {cpu_info.get('physical_cores', 'Unknown')}")
+            print(f"   Logical Cores: {cpu_info.get('logical_cores', 'Unknown')}")
+            if 'frequency' in cpu_info:
+                freq = cpu_info['frequency']
+                print(f"   Frequency: {freq.get('current_mhz', 0):.0f} MHz "
+                      f"(Min: {freq.get('min_mhz', 0):.0f}, Max: {freq.get('max_mhz', 0):.0f})")
+        
+        # Memory Info
+        if 'memory' in info:
+            mem_info = info['memory']
+            print("\n💾 MEMORY")
+            print("-" * 60)
+            print(f"   Total: {mem_info.get('total_gb', 0):.2f} GB")
+            if 'modules' in mem_info:
+                print(f"   Modules: {len(mem_info['modules'])}")
+                for i, module in enumerate(mem_info['modules'][:4], 1):  # Show first 4
+                    mod_str = f"      {i}. {module.get('size', 'Unknown')}"
+                    if 'type' in module:
+                        mod_str += f" - {module['type']}"
+                    if 'speed' in module:
+                        mod_str += f" @ {module['speed']}"
+                    print(mod_str)
+        
+        # Disk Info
+        if 'disks' in info and isinstance(info['disks'], list):
+            print("\n💿 DISKS")
+            print("-" * 60)
+            for disk in info['disks'][:5]:  # Show first 5
+                print(f"   {disk.get('device', 'Unknown')} -> {disk.get('mountpoint', 'Unknown')}")
+                print(f"      Type: {disk.get('fstype', 'Unknown')}, "
+                      f"Size: {disk.get('total_gb', 0):.2f} GB, "
+                      f"Used: {disk.get('percent', 0):.1f}%")
+        
+        # GPU Info
+        if 'gpu' in info and isinstance(info['gpu'], list) and info['gpu']:
+            print("\n🎮 GPU")
+            print("-" * 60)
+            for gpu in info['gpu']:
+                print(f"   {gpu.get('vendor', 'Unknown')} {gpu.get('model', 'Unknown')}")
+                if 'memory' in gpu:
+                    print(f"      Memory: {gpu['memory']}")
+                if 'driver' in gpu:
+                    print(f"      Driver: {gpu['driver']}")
+        
+        # Network Interfaces
+        if 'network_interfaces' in info and isinstance(info['network_interfaces'], list):
+            print("\n🌐 NETWORK INTERFACES")
+            print("-" * 60)
+            active_interfaces = [iface for iface in info['network_interfaces'] if iface.get('is_up', False)]
+            for iface in active_interfaces[:5]:  # Show first 5 active
+                print(f"   {iface.get('name', 'Unknown')}: {'UP' if iface.get('is_up') else 'DOWN'}")
+                for addr in iface.get('addresses', [])[:2]:  # Show first 2 addresses
+                    if 'inet' in addr.get('family', '').lower() or 'AF_INET' in addr.get('family', ''):
+                        print(f"      IP: {addr.get('address', 'Unknown')}")
+        
+        # System Info
+        if 'system' in info:
+            sys_info = info['system']
+            print("\n🖥️  SYSTEM")
+            print("-" * 60)
+            print(f"   Hostname: {sys_info.get('hostname', 'Unknown')}")
+            uptime = sys_info.get('uptime_seconds', 0)
+            hours = int(uptime // 3600)
+            minutes = int((uptime % 3600) // 60)
+            print(f"   Uptime: {hours}h {minutes}m")
+            if 'motherboard_model' in sys_info:
+                print(f"   Motherboard: {sys_info.get('motherboard_manufacturer', '')} "
+                      f"{sys_info.get('motherboard_model', '')}")
+            if 'bios_version' in sys_info:
+                print(f"   BIOS: {sys_info.get('bios_vendor', '')} "
+                      f"v{sys_info.get('bios_version', '')}")
+        
+        print("\n" + "="*60)
     
     def analyze(self, include_predictions: bool = False, prediction_steps: int = 10):
         """Perform AI analysis on collected data"""
@@ -343,6 +461,8 @@ def main():
     app = TelemetryApp()
     
     if args.mode == 'collect' or args.mode == 'full':
+        # Display system info at start
+        app.display_system_info()
         app.collect_sample(args.duration, args.interval)
         if args.save_data:
             app.save_data()
