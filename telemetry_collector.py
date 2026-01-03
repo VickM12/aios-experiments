@@ -128,89 +128,89 @@ class TelemetryCollector:
             try:
                 import glob
                 hwmon_paths = glob.glob('/sys/class/hwmon/hwmon*/fan*_input')
-            
-            for fan_path in hwmon_paths:
-                try:
-                    # Get fan number and hwmon name
-                    hwmon_dir = '/'.join(fan_path.split('/')[:-1])
-                    hwmon_name_path = os.path.join(hwmon_dir, 'name')
-                    fan_num = fan_path.split('_')[0].split('fan')[-1]
-                    
-                    # Read fan speed
-                    with open(fan_path, 'r') as f:
-                        fan_rpm = int(f.read().strip())
-                    
-                    # Get hwmon name
-                    hwmon_name = 'unknown'
-                    if os.path.exists(hwmon_name_path):
-                        with open(hwmon_name_path, 'r') as f:
-                            hwmon_name = f.read().strip()
-                    
-                    # Get fan label if available
-                    fan_label_path = os.path.join(hwmon_dir, f'fan{fan_num}_label')
-                    fan_label = f'fan{fan_num}'
-                    if os.path.exists(fan_label_path):
-                        with open(fan_label_path, 'r') as f:
-                            fan_label = f.read().strip()
-                    
-                    # Get max speed if available
-                    fan_max_path = os.path.join(hwmon_dir, f'fan{fan_num}_max')
-                    fan_max = None
-                    if os.path.exists(fan_max_path):
-                        with open(fan_max_path, 'r') as f:
-                            fan_max = int(f.read().strip())
-                    
-                    # Store fan data
-                    if hwmon_name not in fans:
-                        fans[hwmon_name] = []
-                    
-                    fan_info = {
-                        'label': fan_label,
-                        'rpm': fan_rpm,
-                    }
-                    if fan_max:
-                        fan_info['max_rpm'] = fan_max
-                        fan_info['percent'] = round((fan_rpm / fan_max) * 100, 1) if fan_max > 0 else 0
-                    
-                    fans[hwmon_name].append(fan_info)
-                    detection_methods.append('hwmon')
-                except (ValueError, IOError, PermissionError):
-                    pass
+                
+                for fan_path in hwmon_paths:
+                    try:
+                        # Get fan number and hwmon name
+                        hwmon_dir = '/'.join(fan_path.split('/')[:-1])
+                        hwmon_name_path = os.path.join(hwmon_dir, 'name')
+                        fan_num = fan_path.split('_')[0].split('fan')[-1]
+                        
+                        # Read fan speed
+                        with open(fan_path, 'r') as f:
+                            fan_rpm = int(f.read().strip())
+                        
+                        # Get hwmon name
+                        hwmon_name = 'unknown'
+                        if os.path.exists(hwmon_name_path):
+                            with open(hwmon_name_path, 'r') as f:
+                                hwmon_name = f.read().strip()
+                        
+                        # Get fan label if available
+                        fan_label_path = os.path.join(hwmon_dir, f'fan{fan_num}_label')
+                        fan_label = f'fan{fan_num}'
+                        if os.path.exists(fan_label_path):
+                            with open(fan_label_path, 'r') as f:
+                                fan_label = f.read().strip()
+                        
+                        # Get max speed if available
+                        fan_max_path = os.path.join(hwmon_dir, f'fan{fan_num}_max')
+                        fan_max = None
+                        if os.path.exists(fan_max_path):
+                            with open(fan_max_path, 'r') as f:
+                                fan_max = int(f.read().strip())
+                        
+                        # Store fan data
+                        if hwmon_name not in fans:
+                            fans[hwmon_name] = []
+                        
+                        fan_info = {
+                            'label': fan_label,
+                            'rpm': fan_rpm,
+                        }
+                        if fan_max:
+                            fan_info['max_rpm'] = fan_max
+                            fan_info['percent'] = round((fan_rpm / fan_max) * 100, 1) if fan_max > 0 else 0
+                        
+                        fans[hwmon_name].append(fan_info)
+                        detection_methods.append('hwmon')
+                    except (ValueError, IOError, PermissionError):
+                        pass
             except Exception as e:
                 fans['hwmon_error'] = str(e)
         
         # Try sensors command as fallback (Linux/Unix)
         if not self.is_windows:
-        try:
-            result = subprocess.run(
-                ['sensors'],
-                capture_output=True,
-                text=True,
-                timeout=2
-            )
-            if result.returncode == 0:
-                # Parse fan speeds from sensors output
-                for line in result.stdout.split('\n'):
-                    if 'fan' in line.lower() and 'rpm' in line.lower():
-                        # Extract fan info
-                        parts = line.split(':')
-                        if len(parts) == 2:
-                            fan_name = parts[0].strip()
-                            fan_value = parts[1].strip()
-                            # Extract RPM number
-                            import re
-                            rpm_match = re.search(r'(\d+)\s*RPM', fan_value, re.IGNORECASE)
-                            if rpm_match:
-                                if 'sensors' not in fans:
-                                    fans['sensors'] = []
-                                fans['sensors'].append({
-                                    'label': fan_name,
-                                    'rpm': int(rpm_match.group(1)),
-                                    'raw': fan_value
-                                })
-                                detection_methods.append('sensors_command')
-        except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
-            pass
+            try:
+                result = subprocess.run(
+                    ['sensors'],
+                    capture_output=True,
+                    text=True,
+                    timeout=2
+                )
+                if result.returncode == 0:
+                    # Parse fan speeds from sensors output
+                    for line in result.stdout.split('\n'):
+                        if 'fan' in line.lower() and 'rpm' in line.lower():
+                            # Extract fan info
+                            parts = line.split(':')
+                            if len(parts) == 2:
+                                fan_name = parts[0].strip()
+                                fan_value = parts[1].strip()
+                                # Extract RPM number
+                                import re
+                                rpm_match = re.search(r'(\d+)\s*RPM', fan_value, re.IGNORECASE)
+                                if rpm_match:
+                                    if 'sensors' not in fans:
+                                        fans['sensors'] = []
+                                    fans['sensors'].append({
+                                        'label': fan_name,
+                                        'rpm': int(rpm_match.group(1)),
+                                        'raw': fan_value
+                                    })
+                                    detection_methods.append('sensors_command')
+            except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
+                pass
         
         # Return results
         if fans and not any(key.endswith('_error') for key in fans.keys()):
@@ -244,37 +244,37 @@ class TelemetryCollector:
             try:
                 import glob
                 battery_paths = glob.glob('/sys/class/power_supply/BAT*/')
-            
-            for bat_path in battery_paths:
-                bat_name = os.path.basename(bat_path.rstrip('/'))
-                bat_data = {}
                 
-                # Read various battery attributes
-                attrs = ['capacity', 'energy_now', 'energy_full', 'power_now', 
-                        'voltage_now', 'current_now', 'status']
-                
-                for attr in attrs:
-                    attr_path = os.path.join(bat_path, attr)
-                    if os.path.exists(attr_path):
-                        try:
-                            with open(attr_path, 'r') as f:
-                                value = f.read().strip()
-                                # Convert to numeric if possible
-                                try:
-                                    if 'now' in attr or 'full' in attr:
-                                        # These are in micro-wh or micro-ah
-                                        bat_data[attr] = int(value) / 1_000_000  # Convert to Wh/Ah
-                                    else:
-                                        bat_data[attr] = int(value) if value.isdigit() else value
-                                except ValueError:
-                                    bat_data[attr] = value
-                        except (IOError, PermissionError):
-                            pass
-                
-                if bat_data:
-                    battery_info[bat_name] = bat_data
-        except Exception:
-            pass
+                for bat_path in battery_paths:
+                    bat_name = os.path.basename(bat_path.rstrip('/'))
+                    bat_data = {}
+                    
+                    # Read various battery attributes
+                    attrs = ['capacity', 'energy_now', 'energy_full', 'power_now', 
+                            'voltage_now', 'current_now', 'status']
+                    
+                    for attr in attrs:
+                        attr_path = os.path.join(bat_path, attr)
+                        if os.path.exists(attr_path):
+                            try:
+                                with open(attr_path, 'r') as f:
+                                    value = f.read().strip()
+                                    # Convert to numeric if possible
+                                    try:
+                                        if 'now' in attr or 'full' in attr:
+                                            # These are in micro-wh or micro-ah
+                                            bat_data[attr] = int(value) / 1_000_000  # Convert to Wh/Ah
+                                        else:
+                                            bat_data[attr] = int(value) if value.isdigit() else value
+                                    except ValueError:
+                                        bat_data[attr] = value
+                            except (IOError, PermissionError):
+                                pass
+                    
+                    if bat_data:
+                        battery_info[bat_name] = bat_data
+            except Exception:
+                pass
         
         return battery_info
     
@@ -309,55 +309,55 @@ class TelemetryCollector:
                 except (ValueError, IOError, PermissionError):
                     pass
             
-                if rapl_power:
-                    power_info['rapl'] = rapl_power
-            except Exception:
-                pass
+            if rapl_power:
+                power_info['rapl'] = rapl_power
+        except Exception:
+            pass
         
         # 2. Power supply information (Linux only)
         if self.is_linux:
             try:
                 import glob
                 psu_paths = glob.glob('/sys/class/power_supply/*/')
-            
-            for psu_path in psu_paths:
-                psu_name = os.path.basename(psu_path.rstrip('/'))
                 
-                # Skip batteries (already handled)
-                if psu_name.startswith('BAT'):
-                    continue
-                
-                psu_data = {}
-                
-                # Read power-related attributes
-                attrs = ['power_now', 'current_now', 'voltage_now', 'energy_now', 
-                        'energy_full', 'type', 'online', 'status']
-                
-                for attr in attrs:
-                    attr_path = os.path.join(psu_path, attr)
-                    if os.path.exists(attr_path):
-                        try:
-                            with open(attr_path, 'r') as f:
-                                value = f.read().strip()
-                                # Convert to numeric if possible
-                                try:
-                                    if 'now' in attr or 'full' in attr:
-                                        # These are in micro-units
-                                        psu_data[attr] = int(value) / 1_000_000
-                                    elif attr in ['online']:
-                                        psu_data[attr] = value == '1'
-                                    else:
-                                        psu_data[attr] = int(value) if value.isdigit() else value
-                                except ValueError:
-                                    psu_data[attr] = value
-                        except (IOError, PermissionError):
-                            pass
-                
-                if psu_data:
-                    power_info['power_supplies'] = power_info.get('power_supplies', {})
-                    power_info['power_supplies'][psu_name] = psu_data
-        except Exception:
-            pass
+                for psu_path in psu_paths:
+                    psu_name = os.path.basename(psu_path.rstrip('/'))
+                    
+                    # Skip batteries (already handled)
+                    if psu_name.startswith('BAT'):
+                        continue
+                    
+                    psu_data = {}
+                    
+                    # Read power-related attributes
+                    attrs = ['power_now', 'current_now', 'voltage_now', 'energy_now', 
+                            'energy_full', 'type', 'online', 'status']
+                    
+                    for attr in attrs:
+                        attr_path = os.path.join(psu_path, attr)
+                        if os.path.exists(attr_path):
+                            try:
+                                with open(attr_path, 'r') as f:
+                                    value = f.read().strip()
+                                    # Convert to numeric if possible
+                                    try:
+                                        if 'now' in attr or 'full' in attr:
+                                            # These are in micro-units
+                                            psu_data[attr] = int(value) / 1_000_000
+                                        elif attr in ['online']:
+                                            psu_data[attr] = value == '1'
+                                        else:
+                                            psu_data[attr] = int(value) if value.isdigit() else value
+                                    except ValueError:
+                                        psu_data[attr] = value
+                            except (IOError, PermissionError):
+                                pass
+                    
+                    if psu_data:
+                        power_info['power_supplies'] = power_info.get('power_supplies', {})
+                        power_info['power_supplies'][psu_name] = psu_data
+            except Exception:
+                pass
         
         # 3. Try nvidia-smi for GPU power (if NVIDIA GPU)
         try:
@@ -432,7 +432,7 @@ class TelemetryCollector:
             if self.is_linux:
                 try:
                     with open('/proc/cpuinfo', 'r') as f:
-                    cpuinfo = f.read()
+                        cpuinfo = f.read()
                     for line in cpuinfo.split('\n'):
                         if 'model name' in line.lower():
                             info['cpu']['model'] = line.split(':')[1].strip()
@@ -502,32 +502,32 @@ class TelemetryCollector:
                 try:
                     result = subprocess.run(
                         ['dmidecode', '-t', 'memory'],
-                    capture_output=True,
-                    text=True,
-                    timeout=2
-                )
-                if result.returncode == 0:
-                    # Parse memory modules
-                    modules = []
-                    current_module = {}
-                    for line in result.stdout.split('\n'):
-                        if 'Memory Device' in line:
-                            if current_module:
-                                modules.append(current_module)
-                            current_module = {}
-                        elif 'Size:' in line and 'No Module' not in line:
-                            size_str = line.split(':')[1].strip()
-                            current_module['size'] = size_str
-                        elif 'Type:' in line:
-                            current_module['type'] = line.split(':')[1].strip()
-                        elif 'Speed:' in line:
-                            current_module['speed'] = line.split(':')[1].strip()
-                    if current_module:
-                        modules.append(current_module)
-                    if modules:
-                        info['memory']['modules'] = modules
-            except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
-                pass  # dmidecode not available or requires root
+                        capture_output=True,
+                        text=True,
+                        timeout=2
+                    )
+                    if result.returncode == 0:
+                        # Parse memory modules
+                        modules = []
+                        current_module = {}
+                        for line in result.stdout.split('\n'):
+                            if 'Memory Device' in line:
+                                if current_module:
+                                    modules.append(current_module)
+                                current_module = {}
+                            elif 'Size:' in line and 'No Module' not in line:
+                                size_str = line.split(':')[1].strip()
+                                current_module['size'] = size_str
+                            elif 'Type:' in line:
+                                current_module['type'] = line.split(':')[1].strip()
+                            elif 'Speed:' in line:
+                                current_module['speed'] = line.split(':')[1].strip()
+                        if current_module:
+                            modules.append(current_module)
+                        if modules:
+                            info['memory']['modules'] = modules
+                except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
+                    pass  # dmidecode not available or requires root
         except Exception as e:
             info['memory']['error'] = str(e)
         
@@ -612,22 +612,22 @@ class TelemetryCollector:
                 try:
                     result = subprocess.run(
                         ['lspci'],
-                    capture_output=True,
-                    text=True,
-                    timeout=2
-                )
-                if result.returncode == 0:
-                    for line in result.stdout.split('\n'):
-                        if 'vga' in line.lower() or '3d' in line.lower() or 'display' in line.lower():
-                            gpu_info = line.split(':')[2].strip() if ':' in line else line.strip()
-                            if not any(gpu.get('model', '').lower() in gpu_info.lower() 
-                                      for gpu in info['gpu']):
-                                info['gpu'].append({
-                                    'vendor': 'Unknown',
-                                    'model': gpu_info,
-                                })
-            except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
-                pass
+                        capture_output=True,
+                        text=True,
+                        timeout=2
+                    )
+                    if result.returncode == 0:
+                        for line in result.stdout.split('\n'):
+                            if 'vga' in line.lower() or '3d' in line.lower() or 'display' in line.lower():
+                                gpu_info = line.split(':')[2].strip() if ':' in line else line.strip()
+                                if not any(gpu.get('model', '').lower() in gpu_info.lower() 
+                                          for gpu in info['gpu']):
+                                    info['gpu'].append({
+                                        'vendor': 'Unknown',
+                                        'model': gpu_info,
+                                    })
+                except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
+                    pass
         except Exception as e:
             info['gpu'] = {'error': str(e)}
         
@@ -644,31 +644,31 @@ class TelemetryCollector:
                 try:
                     result = subprocess.run(
                         ['dmidecode', '-t', 'baseboard', '-t', 'bios'],
-                    capture_output=True,
-                    text=True,
-                    timeout=2
-                )
-                if result.returncode == 0:
-                    output = result.stdout
-                    if 'Base Board' in output or 'Motherboard' in output:
-                        for line in output.split('\n'):
-                            if 'Manufacturer:' in line:
-                                info['system']['motherboard_manufacturer'] = line.split(':')[1].strip()
-                            elif 'Product Name:' in line:
-                                info['system']['motherboard_model'] = line.split(':')[1].strip()
-                            elif 'Version:' in line and 'motherboard' not in info['system']:
-                                info['system']['motherboard_version'] = line.split(':')[1].strip()
-                    
-                    if 'BIOS' in output:
-                        for line in output.split('\n'):
-                            if 'Vendor:' in line:
-                                info['system']['bios_vendor'] = line.split(':')[1].strip()
-                            elif 'Version:' in line and 'bios' not in info['system']:
-                                info['system']['bios_version'] = line.split(':')[1].strip()
-                            elif 'Release Date:' in line:
-                                info['system']['bios_date'] = line.split(':')[1].strip()
-            except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
-                pass  # dmidecode not available or requires root
+                        capture_output=True,
+                        text=True,
+                        timeout=2
+                    )
+                    if result.returncode == 0:
+                        output = result.stdout
+                        if 'Base Board' in output or 'Motherboard' in output:
+                            for line in output.split('\n'):
+                                if 'Manufacturer:' in line:
+                                    info['system']['motherboard_manufacturer'] = line.split(':')[1].strip()
+                                elif 'Product Name:' in line:
+                                    info['system']['motherboard_model'] = line.split(':')[1].strip()
+                                elif 'Version:' in line and 'motherboard' not in info['system']:
+                                    info['system']['motherboard_version'] = line.split(':')[1].strip()
+                        
+                        if 'BIOS' in output:
+                            for line in output.split('\n'):
+                                if 'Vendor:' in line:
+                                    info['system']['bios_vendor'] = line.split(':')[1].strip()
+                                elif 'Version:' in line and 'bios' not in info['system']:
+                                    info['system']['bios_version'] = line.split(':')[1].strip()
+                                elif 'Release Date:' in line:
+                                    info['system']['bios_date'] = line.split(':')[1].strip()
+                except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
+                    pass  # dmidecode not available or requires root
         except Exception as e:
             info['system']['error'] = str(e)
         
