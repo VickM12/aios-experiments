@@ -11,8 +11,17 @@ __pycache__/
 *.pyzwzwzw
 .env
 .venv
+venv/
+.venv/
+
+# Output files
 telemetry_data_*.json
 analysis_results_*.json
-telemetry_dashboard.html
-metrics.png
+telemetry_dashboard_*.html
+telemetry_metrics_*.png
+anomaly_analysis_*.png
+*.html
+*.png
+*.json
+
 .DS_Store

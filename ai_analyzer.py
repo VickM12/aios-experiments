@@ -81,20 +81,69 @@ class TelemetryAnalyzer:
         # Calculate anomaly scores
         scores = self.anomaly_detector.score_samples(df)
         
+        # Calculate statistics for comparison
+        df_mean = df.mean()
+        df_std = df.std()
+        
+        # Analyze what makes each anomaly unusual
+        anomaly_details = []
+        for idx in anomaly_indices:
+            anomaly_row = df.iloc[idx]
+            deviations = {}
+            
+            # Calculate how many standard deviations each feature is from the mean
+            for col in df.columns:
+                mean_val = df_mean[col]
+                std_val = df_std[col]
+                actual_val = anomaly_row[col]
+                
+                if std_val > 0:  # Avoid division by zero
+                    z_score = (actual_val - mean_val) / std_val
+                    deviations[col] = {
+                        'value': float(actual_val),
+                        'mean': float(mean_val),
+                        'std': float(std_val),
+                        'z_score': float(z_score),
+                        'deviation_percent': float((actual_val - mean_val) / mean_val * 100) if mean_val != 0 else 0
+                    }
+                else:
+                    deviations[col] = {
+                        'value': float(actual_val),
+                        'mean': float(mean_val),
+                        'std': 0,
+                        'z_score': 0,
+                        'deviation_percent': 0
+                    }
+            
+            # Identify top contributing factors (highest absolute z-scores)
+            contributing_factors = sorted(
+                [(k, v['z_score']) for k, v in deviations.items()],
+                key=lambda x: abs(x[1]),
+                reverse=True
+            )[:5]  # Top 5 contributing factors
+            
+            anomaly_details.append({
+                'index': idx,
+                'timestamp': telemetry_data[idx].get('timestamp'),
+                'score': float(scores[idx]),
+                'features': anomaly_row.to_dict(),
+                'deviations': deviations,
+                'top_factors': [
+                    {
+                        'metric': factor[0],
+                        'z_score': factor[1],
+                        'deviation': deviations[factor[0]]['deviation_percent']
+                    }
+                    for factor in contributing_factors
+                ]
+            })
+        
         return {
             'anomalies_detected': len(anomaly_indices),
             'anomaly_indices': anomaly_indices,
             'anomaly_scores': scores.tolist(),
             'anomaly_percentage': (len(anomaly_indices) / len(telemetry_data)) * 100,
-            'details': [
-                {
-                    'index': idx,
-                    'timestamp': telemetry_data[idx].get('timestamp'),
-                    'score': float(scores[idx]),
-                    'features': df.iloc[idx].to_dict()
-                }
-                for idx in anomaly_indices
-            ]
+            'details': anomaly_details
         }
     
     def cluster_analysis(self, telemetry_data: List[Dict[str, Any]], n_clusters: int = 3) -> Dict[str, Any]:

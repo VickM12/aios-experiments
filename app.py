@@ -7,6 +7,7 @@ import time
 from datetime import datetime
 from telemetry_collector import TelemetryCollector
 from ai_analyzer import TelemetryAnalyzer
+from visualizer import TelemetryVisualizer
 import argparse
 
 
@@ -16,6 +17,7 @@ class TelemetryApp:
     def __init__(self):
         self.collector = TelemetryCollector()
         self.analyzer = TelemetryAnalyzer()
+        self.visualizer = TelemetryVisualizer()
         self.telemetry_history = []
     
     def collect_sample(self, duration: int = 60, interval: float = 1.0):
@@ -93,9 +95,40 @@ class TelemetryApp:
                 print(f"Anomalies detected: {anomaly['anomalies_detected']} "
                       f"({anomaly.get('anomaly_percentage', 0):.2f}%)")
                 if anomaly.get('details'):
-                    print("\nAnomaly details:")
-                    for detail in anomaly['details'][:5]:  # Show first 5
-                        print(f"   • Index {detail['index']}: Score {detail['score']:.4f}")
+                    print("\nAnomaly Analysis:")
+                    for detail in anomaly['details'][:10]:  # Show first 10
+                        print(f"\n   📍 Anomaly at Index {detail['index']} "
+                              f"(Score: {detail['score']:.4f})")
+                        print(f"      Timestamp: {detail.get('timestamp', 'N/A')}")
+                        
+                        # Show top contributing factors
+                        if 'top_factors' in detail and detail['top_factors']:
+                            print(f"      🔎 Top Contributing Factors:")
+                            for factor in detail['top_factors'][:3]:  # Top 3 factors
+                                metric_name = factor['metric'].replace('_', ' ').title()
+                                z_score = factor['z_score']
+                                deviation = factor['deviation']
+                                direction = "↑" if z_score > 0 else "↓"
+                                
+                                # Get the actual value and mean for context
+                                if factor['metric'] in detail.get('deviations', {}):
+                                    dev_info = detail['deviations'][factor['metric']]
+                                    actual_val = dev_info['value']
+                                    mean_val = dev_info['mean']
+                                    
+                                    # Format based on metric type
+                                    if 'percent' in factor['metric'] or 'cpu' in factor['metric'] or 'memory' in factor['metric'] or 'disk' in factor['metric']:
+                                        print(f"         • {metric_name}: {actual_val:.2f}% "
+                                              f"(avg: {mean_val:.2f}%, {direction} {abs(deviation):.1f}%)")
+                                    elif 'temperature' in factor['metric']:
+                                        print(f"         • {metric_name}: {actual_val:.2f}°C "
+                                              f"(avg: {mean_val:.2f}°C, {direction} {abs(deviation):.1f}%)")
+                                    elif 'mb' in factor['metric'] or 'gb' in factor['metric']:
+                                        print(f"         • {metric_name}: {actual_val:.2f} "
+                                              f"(avg: {mean_val:.2f}, {direction} {abs(deviation):.1f}%)")
+                                    else:
+                                        print(f"         • {metric_name}: {actual_val:.2f} "
+                                              f"(avg: {mean_val:.2f}, z-score: {z_score:.2f})")
             else:
                 print(anomaly.get('message', 'No anomaly data'))
         
@@ -156,6 +189,41 @@ class TelemetryApp:
             json.dump(analysis, f, indent=2, default=str)
         print(f"Analysis saved to {filename}")
     
+    def visualize(self, analysis: dict = None, interactive: bool = True, show_plot: bool = False):
+        """Generate visualizations of telemetry data"""
+        if not self.telemetry_history:
+            print("No telemetry data available. Please collect data first.")
+            return
+        
+        print("\n📊 Generating visualizations...")
+        
+        if interactive:
+            # Generate interactive Plotly dashboard
+            dashboard_path = f"telemetry_dashboard_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+            self.visualizer.plot_interactive_dashboard(
+                self.telemetry_history, 
+                analysis, 
+                save_path=dashboard_path
+            )
+            print(f"\n✅ Interactive dashboard saved to: {dashboard_path}")
+            print(f"   Open it in your browser to view the graphs!")
+        
+        if show_plot:
+            # Generate and show static matplotlib plots
+            print("\n📈 Displaying static plots...")
+            self.visualizer.plot_basic_metrics(self.telemetry_history)
+        
+        # Always generate static plot file
+        plot_path = f"telemetry_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        self.visualizer.plot_basic_metrics(self.telemetry_history, save_path=plot_path)
+        print(f"✅ Static plot saved to: {plot_path}")
+        
+        # Generate anomaly visualization if analysis available
+        if analysis and 'anomaly_detection' in analysis:
+            anomaly_path = f"anomaly_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            self.visualizer.plot_anomaly_analysis(self.telemetry_history, analysis, save_path=anomaly_path)
+            print(f"✅ Anomaly plot saved to: {anomaly_path}")
+    
     def real_time_monitor(self, duration: int = 60, interval: float = 1.0):
         """Real-time monitoring with live updates"""
         print(f"Starting real-time monitoring for {duration} seconds...")
@@ -196,6 +264,10 @@ def main():
                        help='Save collected data to file')
     parser.add_argument('--save-analysis', action='store_true', 
                        help='Save analysis results to file')
+    parser.add_argument('--visualize', action='store_true', 
+                       help='Generate visualizations (interactive HTML dashboard)')
+    parser.add_argument('--show-plot', action='store_true', 
+                       help='Display static plots in a window (requires GUI)')
     
     args = parser.parse_args()
     
@@ -214,6 +286,10 @@ def main():
         analysis = app.analyze()
         if args.save_analysis and analysis:
             app.save_analysis(analysis)
+        
+        # Generate visualizations if requested
+        if args.visualize or args.show_plot:
+            app.visualize(analysis, interactive=args.visualize, show_plot=args.show_plot)
     
     if args.mode == 'monitor':
         app.real_time_monitor(args.duration, args.interval)
