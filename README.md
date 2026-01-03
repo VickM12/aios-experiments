@@ -154,11 +154,36 @@ Note: Some features may be limited on Windows:
 - RAPL power monitoring (Linux only)
 - Some temperature sensors (depends on hardware/drivers)
 
+## GUI Application
+
+The app includes a web-based GUI with chat interface:
+
+```bash
+python gui_app.py
+```
+
+This launches a web interface at `http://localhost:7860` with:
+- **Real-time Monitoring**: Live telemetry collection and visualization
+- **Chat Interface**: Ask AI questions about your system status
+- **Interactive Dashboard**: Real-time plots and metrics
+- **AI Analysis**: One-click analysis with recommendations
+
+### Chat Commands
+
+You can ask the AI chat:
+- "What's my CPU usage?"
+- "How's my memory?"
+- "Are there any anomalies?"
+- "What's the temperature?"
+- "Give me recommendations"
+- "Show me system status"
+
 ## Notes
 
 - Some sensors (temperature, fans) may not be available on all systems
 - Requires appropriate permissions to access system metrics
 - The anomaly detector needs at least 10 data points to function effectively
+- GUI requires Gradio (automatically installed with requirements)
 
 ## License
 

@@ -18,9 +18,10 @@ class TelemetryAnalyzer:
     
     def __init__(self):
         self.scaler = StandardScaler()
-        self.anomaly_detector = IsolationForest(contamination=0.1, random_state=42)
+        self.anomaly_detector = IsolationForest(contamination='auto', random_state=42)
         self.pca = PCA(n_components=2)
         self.is_fitted = False
+        self.training_data = None
         
     def prepare_features(self, telemetry_data: List[Dict[str, Any]]) -> pd.DataFrame:
         """Extract and prepare features from telemetry data"""
@@ -69,17 +70,43 @@ class TelemetryAnalyzer:
         
         df = self.prepare_features(telemetry_data)
         
-        # Fit the anomaly detector
-        if not self.is_fitted:
-            self.anomaly_detector.fit(df)
-            self.is_fitted = True
-        
-        # Predict anomalies (-1 for anomaly, 1 for normal)
-        predictions = self.anomaly_detector.predict(df)
-        anomaly_indices = [i for i, pred in enumerate(predictions) if pred == -1]
-        
-        # Calculate anomaly scores
-        scores = self.anomaly_detector.score_samples(df)
+        # Use score-based thresholding instead of fixed contamination
+        # Fit on a subset of data if we have enough, otherwise use all
+        if len(df) >= 20:
+            # Use first 80% for training, last 20% for detection
+            train_size = int(len(df) * 0.8)
+            train_df = df.iloc[:train_size]
+            test_df = df.iloc[train_size:]
+            
+            # Fit the anomaly detector on training data
+            if not self.is_fitted or self.training_data is None:
+                self.anomaly_detector.fit(train_df)
+                self.training_data = train_df
+                self.is_fitted = True
+            
+            # Get scores for test data
+            test_scores = self.anomaly_detector.score_samples(test_df)
+            # Use a threshold based on score distribution (lower = more anomalous)
+            score_threshold = np.percentile(test_scores, 10)  # Bottom 10% are anomalies
+            anomaly_mask = test_scores < score_threshold
+            anomaly_indices = [train_size + i for i, is_anom in enumerate(anomaly_mask) if is_anom]
+            
+            # Get scores for all data for display
+            train_scores = self.anomaly_detector.score_samples(train_df)
+            all_scores = np.concatenate([train_scores, test_scores])
+        else:
+            # Not enough data - use adaptive thresholding
+            if not self.is_fitted:
+                self.anomaly_detector.fit(df)
+                self.training_data = df
+                self.is_fitted = True
+            
+            scores = self.anomaly_detector.score_samples(df)
+            # Use percentile-based threshold (more conservative)
+            score_threshold = np.percentile(scores, 5)  # Bottom 5% are anomalies
+            anomaly_mask = scores < score_threshold
+            anomaly_indices = [i for i, is_anom in enumerate(anomaly_mask) if is_anom]
+            all_scores = scores
         
         # Calculate statistics for comparison
         df_mean = df.mean()
