@@ -134,10 +134,25 @@ visualizer.plot_interactive_dashboard(data, analysis, save_path='dashboard.html'
 ## Requirements
 
 - Python 3.8+
-- Linux system (for full sensor support)
+- **Cross-platform support**: Works on Linux, Windows, and macOS
+  - **Linux**: Full sensor support (temperature, fans, RAPL power)
+  - **Windows**: Core metrics + WMI for hardware info (requires `wmi` package)
+  - **macOS**: Core metrics via psutil
 - psutil for system metrics
 - scikit-learn for ML analysis
 - matplotlib/plotly for visualization
+
+### Windows-Specific Requirements
+
+On Windows, install additional packages for full hardware information:
+```bash
+pip install wmi pywin32
+```
+
+Note: Some features may be limited on Windows:
+- Fan speeds (if not exposed via psutil)
+- RAPL power monitoring (Linux only)
+- Some temperature sensors (depends on hardware/drivers)
 
 ## Notes
 

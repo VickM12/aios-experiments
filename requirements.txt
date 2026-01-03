@@ -6,4 +6,6 @@ matplotlib>=3.7.0
 plotly>=5.14.0
 flask>=2.3.0
 python-dotenv>=1.0.0
+wmi>=1.5.1; sys_platform == "win32"
+pywin32>=306; sys_platform == "win32"
 

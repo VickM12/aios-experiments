@@ -17,6 +17,9 @@ class TelemetryCollector:
     
     def __init__(self):
         self.collection_interval = 1.0  # seconds
+        self.is_windows = platform.system() == 'Windows'
+        self.is_linux = platform.system() == 'Linux'
+        self.is_mac = platform.system() == 'Darwin'
         
     def get_cpu_metrics(self) -> Dict[str, Any]:
         """Collect CPU telemetry data"""
@@ -120,10 +123,11 @@ class TelemetryCollector:
         except Exception as e:
             fans['psutil_error'] = str(e)
         
-        # Also check /sys/class/hwmon/ directly for more fan data
-        try:
-            import glob
-            hwmon_paths = glob.glob('/sys/class/hwmon/hwmon*/fan*_input')
+        # Also check /sys/class/hwmon/ directly for more fan data (Linux only)
+        if self.is_linux:
+            try:
+                import glob
+                hwmon_paths = glob.glob('/sys/class/hwmon/hwmon*/fan*_input')
             
             for fan_path in hwmon_paths:
                 try:
@@ -172,10 +176,11 @@ class TelemetryCollector:
                     detection_methods.append('hwmon')
                 except (ValueError, IOError, PermissionError):
                     pass
-        except Exception as e:
-            fans['hwmon_error'] = str(e)
+            except Exception as e:
+                fans['hwmon_error'] = str(e)
         
-        # Try sensors command as fallback
+        # Try sensors command as fallback (Linux/Unix)
+        if not self.is_windows:
         try:
             result = subprocess.run(
                 ['sensors'],
@@ -234,10 +239,11 @@ class TelemetryCollector:
         except Exception:
             pass
         
-        # Also check /sys/class/power_supply/ for more detailed battery info
-        try:
-            import glob
-            battery_paths = glob.glob('/sys/class/power_supply/BAT*/')
+        # Also check /sys/class/power_supply/ for more detailed battery info (Linux only)
+        if self.is_linux:
+            try:
+                import glob
+                battery_paths = glob.glob('/sys/class/power_supply/BAT*/')
             
             for bat_path in battery_paths:
                 bat_name = os.path.basename(bat_path.rstrip('/'))
@@ -303,15 +309,16 @@ class TelemetryCollector:
                 except (ValueError, IOError, PermissionError):
                     pass
             
-            if rapl_power:
-                power_info['rapl'] = rapl_power
-        except Exception:
-            pass
+                if rapl_power:
+                    power_info['rapl'] = rapl_power
+            except Exception:
+                pass
         
-        # 2. Power supply information
-        try:
-            import glob
-            psu_paths = glob.glob('/sys/class/power_supply/*/')
+        # 2. Power supply information (Linux only)
+        if self.is_linux:
+            try:
+                import glob
+                psu_paths = glob.glob('/sys/class/power_supply/*/')
             
             for psu_path in psu_paths:
                 psu_name = os.path.basename(psu_path.rstrip('/'))
@@ -421,9 +428,10 @@ class TelemetryCollector:
         
         # CPU Details
         try:
-            # Try to get CPU model from /proc/cpuinfo
-            try:
-                with open('/proc/cpuinfo', 'r') as f:
+            # Try to get CPU model from /proc/cpuinfo (Linux) or WMI (Windows)
+            if self.is_linux:
+                try:
+                    with open('/proc/cpuinfo', 'r') as f:
                     cpuinfo = f.read()
                     for line in cpuinfo.split('\n'):
                         if 'model name' in line.lower():
@@ -435,8 +443,34 @@ class TelemetryCollector:
                         if 'cpu family' in line.lower():
                             info['cpu']['family'] = line.split(':')[1].strip()
                             break
-            except:
-                pass
+                except:
+                    pass
+            elif self.is_windows:
+                # Use WMI on Windows to get CPU info
+                try:
+                    import wmi
+                    c = wmi.WMI()
+                    for processor in c.Win32_Processor():
+                        info['cpu']['model'] = processor.Name
+                        info['cpu']['vendor'] = processor.Manufacturer
+                        break
+                except ImportError:
+                    # wmi not installed, try alternative
+                    try:
+                        result = subprocess.run(
+                            ['wmic', 'cpu', 'get', 'name'],
+                            capture_output=True,
+                            text=True,
+                            timeout=2
+                        )
+                        if result.returncode == 0:
+                            lines = result.stdout.strip().split('\n')
+                            if len(lines) > 1:
+                                info['cpu']['model'] = lines[1].strip()
+                    except:
+                        pass
+                except Exception:
+                    pass
             
             # CPU architecture
             info['cpu']['architecture'] = platform.machine()
@@ -463,10 +497,11 @@ class TelemetryCollector:
                 'total_bytes': mem.total,
             }
             
-            # Try to get memory info from dmidecode (requires root)
-            try:
-                result = subprocess.run(
-                    ['dmidecode', '-t', 'memory'],
+            # Try to get memory info from dmidecode (Linux, requires root) or WMI (Windows)
+            if self.is_linux:
+                try:
+                    result = subprocess.run(
+                        ['dmidecode', '-t', 'memory'],
                     capture_output=True,
                     text=True,
                     timeout=2
@@ -572,10 +607,11 @@ class TelemetryCollector:
             except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
                 pass
             
-            # Try lspci for other GPUs
-            try:
-                result = subprocess.run(
-                    ['lspci'],
+            # Try lspci for other GPUs (Linux) or WMI (Windows)
+            if self.is_linux:
+                try:
+                    result = subprocess.run(
+                        ['lspci'],
                     capture_output=True,
                     text=True,
                     timeout=2
@@ -603,10 +639,11 @@ class TelemetryCollector:
                 'boot_time': datetime.fromtimestamp(psutil.boot_time()).isoformat(),
             }
             
-            # Try to get motherboard/BIOS info
-            try:
-                result = subprocess.run(
-                    ['dmidecode', '-t', 'baseboard', '-t', 'bios'],
+            # Try to get motherboard/BIOS info (Linux: dmidecode, Windows: WMI)
+            if self.is_linux:
+                try:
+                    result = subprocess.run(
+                        ['dmidecode', '-t', 'baseboard', '-t', 'bios'],
                     capture_output=True,
                     text=True,
                     timeout=2
