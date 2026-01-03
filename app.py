@@ -55,8 +55,24 @@ class TelemetryApp:
                 status = insights['current_status']
                 for metric, data in status.items():
                     status_icon = "🔴" if data.get('status') == 'high' else "🟡" if data.get('status') == 'moderate' else "🟢"
-                    print(f"{status_icon} {metric.upper()}: {data.get('usage', data.get('average', 'N/A')):.2f}% "
-                          f"({data.get('status', 'unknown')})")
+                    # Temperature uses 'average' and should display in Celsius
+                    if metric == 'temperature':
+                        value = data.get('average', 'N/A')
+                        if value != 'N/A':
+                            print(f"{status_icon} {metric.upper()}: {value:.2f}°C "
+                                  f"({data.get('status', 'unknown')})")
+                        else:
+                            print(f"{status_icon} {metric.upper()}: {value} "
+                                  f"({data.get('status', 'unknown')})")
+                    else:
+                        # Other metrics use 'usage' and display as percentage
+                        value = data.get('usage', 'N/A')
+                        if value != 'N/A':
+                            print(f"{status_icon} {metric.upper()}: {value:.2f}% "
+                                  f"({data.get('status', 'unknown')})")
+                        else:
+                            print(f"{status_icon} {metric.upper()}: {value} "
+                                  f"({data.get('status', 'unknown')})")
             
             if insights.get('warnings'):
                 print("\n⚠️  WARNINGS:")
