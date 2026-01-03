@@ -65,16 +65,29 @@ class TelemetryGUI:
             return "", history
         
         # Ensure history is in the correct format (list of dicts with role/content)
-        if history and isinstance(history[0], (tuple, list)):
-            # Convert old tuple format to new dict format
+        if history:
             new_history = []
             for item in history:
+                if item is None:
+                    continue
                 if isinstance(item, (tuple, list)) and len(item) == 2:
-                    new_history.append({"role": "user", "content": item[0]})
-                    new_history.append({"role": "assistant", "content": item[1]})
+                    # Convert tuple format to dict format
+                    user_msg = item[0] if item[0] is not None else ""
+                    assistant_msg = item[1] if item[1] is not None else ""
+                    if user_msg or assistant_msg:  # Only add non-empty messages
+                        new_history.append({"role": "user", "content": str(user_msg)})
+                        new_history.append({"role": "assistant", "content": str(assistant_msg)})
                 elif isinstance(item, dict):
-                    new_history.append(item)
+                    # Ensure content is not None
+                    content = item.get("content")
+                    if content is not None:
+                        new_history.append({
+                            "role": item.get("role", "user"),
+                            "content": str(content)
+                        })
             history = new_history
+        else:
+            history = []
         
         # Get current telemetry state
         current_data = self.telemetry_history[-1] if self.telemetry_history else None
@@ -106,17 +119,48 @@ class TelemetryGUI:
             else:
                 response = "No telemetry data available. Please start monitoring first."
         
-        elif "anomaly" in message_lower or "problem" in message_lower or "issue" in message_lower:
+        elif "anomaly" in message_lower or "problem" in message_lower or "issue" in message_lower or "anomalies" in message_lower:
             if len(self.telemetry_history) >= 10:
-                analysis = self.analyzer.comprehensive_analysis(self.telemetry_history)
-                anomaly = analysis.get('anomaly_detection', {})
-                if anomaly.get('anomalies_detected', 0) > 0:
-                    response = f"**Anomaly Detection:**\n"
-                    response += f"- Found {anomaly['anomalies_detected']} anomalies ({anomaly.get('anomaly_percentage', 0):.1f}%)\n"
-                    if anomaly.get('details'):
-                        response += f"- Latest anomaly at index {anomaly['details'][-1]['index']}\n"
-                else:
-                    response = "**No anomalies detected.** System appears to be operating normally."
+                try:
+                    analysis = self.analyzer.comprehensive_analysis(self.telemetry_history)
+                    anomaly = analysis.get('anomaly_detection', {})
+                    if anomaly.get('anomalies_detected', 0) > 0:
+                        # Check if user wants detailed explanation (keywords like "tell", "explain", "more", "detail", "llm")
+                        wants_details = any(word in message_lower for word in ['tell', 'explain', 'more', 'detail', 'what', 'why', 'how', 'llm', 'about'])
+                        
+                        if wants_details and self.llm_analyzer.is_available():
+                            # Use LLM for detailed explanation
+                            try:
+                                llm_response = self.llm_analyzer.explain_anomalies(self.telemetry_history, analysis)
+                                if llm_response and str(llm_response).strip():
+                                    response = str(llm_response).strip()
+                                else:
+                                    # LLM returned empty, fall back to basic info
+                                    response = f"**Anomaly Detection:**\n"
+                                    response += f"- Found {anomaly['anomalies_detected']} anomalies ({anomaly.get('anomaly_percentage', 0):.1f}%)\n"
+                                    if anomaly.get('details'):
+                                        response += f"- Latest anomaly at index {anomaly['details'][-1]['index']}\n"
+                                    response += f"\n⚠️ LLM returned empty response. Showing basic info."
+                            except Exception as e:
+                                response = f"**Anomaly Detection:**\n"
+                                response += f"- Found {anomaly['anomalies_detected']} anomalies ({anomaly.get('anomaly_percentage', 0):.1f}%)\n"
+                                if anomaly.get('details'):
+                                    response += f"- Latest anomaly at index {anomaly['details'][-1]['index']}\n"
+                                response += f"\n⚠️ Error getting LLM explanation: {str(e)}"
+                        else:
+                            # Basic anomaly info
+                            response = f"**Anomaly Detection:**\n"
+                            response += f"- Found {anomaly['anomalies_detected']} anomalies ({anomaly.get('anomaly_percentage', 0):.1f}%)\n"
+                            if anomaly.get('details'):
+                                response += f"- Latest anomaly at index {anomaly['details'][-1]['index']}\n"
+                            if self.llm_analyzer.is_available():
+                                response += f"\n💡 *Ask 'Tell me more about the anomalies' or 'Explain the anomalies' for detailed LLM analysis.*"
+                            elif wants_details:
+                                response += f"\n💡 *LLM not available. For detailed explanations, make sure Ollama is running or set API keys.*"
+                    else:
+                        response = "**No anomalies detected.** System appears to be operating normally."
+                except Exception as e:
+                    response = f"Error analyzing anomalies: {str(e)}"
             else:
                 response = "Need at least 10 data points for anomaly detection. Please collect more data."
         
@@ -168,17 +212,83 @@ class TelemetryGUI:
                 response = "No data available. Start monitoring to see status."
         
         else:
-            response = "I can help you with:\n"
-            response += "- CPU status and usage\n"
-            response += "- Memory/RAM information\n"
-            response += "- Temperature monitoring\n"
-            response += "- Anomaly detection\n"
-            response += "- System recommendations\n"
-            response += "- Overall system status\n\n"
-            response += "Try asking: 'What's my CPU usage?' or 'Are there any anomalies?'"
+            # For general questions, try using LLM if available
+            if self.llm_analyzer.is_available() and len(self.telemetry_history) > 0:
+                try:
+                    # Get analysis for context
+                    analysis = None
+                    if len(self.telemetry_history) >= 10:
+                        analysis = self.analyzer.comprehensive_analysis(self.telemetry_history)
+                    
+                    # Use LLM to answer the question
+                    response = self.llm_analyzer.answer_question(
+                        message,
+                        self.telemetry_history,
+                        analysis
+                    )
+                except Exception as e:
+                    response = f"I encountered an error: {str(e)}\n\n"
+                    response += "I can help you with:\n"
+                    response += "- CPU status and usage\n"
+                    response += "- Memory/RAM information\n"
+                    response += "- Temperature monitoring\n"
+                    response += "- Anomaly detection\n"
+                    response += "- System recommendations\n"
+                    response += "- Overall system status"
+            else:
+                # Check for common question patterns that should use LLM
+                llm_keywords = ['tell me', 'explain', 'why', 'how', 'what is', 'what are', 'describe', 'analyze', 'llm']
+                if any(keyword in message_lower for keyword in llm_keywords) and len(self.telemetry_history) > 0:
+                    if self.llm_analyzer.is_available():
+                        try:
+                            analysis = None
+                            if len(self.telemetry_history) >= 10:
+                                analysis = self.analyzer.comprehensive_analysis(self.telemetry_history)
+                            response = self.llm_analyzer.answer_question(
+                                message,
+                                self.telemetry_history,
+                                analysis
+                            )
+                        except Exception as e:
+                            response = f"Error using LLM: {str(e)}\n\n"
+                            response += "I can help you with:\n"
+                            response += "- CPU status and usage\n"
+                            response += "- Memory/RAM information\n"
+                            response += "- Temperature monitoring\n"
+                            response += "- Anomaly detection\n"
+                            response += "- System recommendations\n"
+                            response += "- Overall system status"
+                    else:
+                        response = "I can help you with:\n"
+                        response += "- CPU status and usage\n"
+                        response += "- Memory/RAM information\n"
+                        response += "- Temperature monitoring\n"
+                        response += "- Anomaly detection\n"
+                        response += "- System recommendations\n"
+                        response += "- Overall system status\n\n"
+                        response += "💡 *For more detailed AI responses, make sure Ollama is running or set API keys.*\n\n"
+                        response += "Try asking: 'What's my CPU usage?' or 'Are there any anomalies?'"
+                else:
+                    response = "I can help you with:\n"
+                    response += "- CPU status and usage\n"
+                    response += "- Memory/RAM information\n"
+                    response += "- Temperature monitoring\n"
+                    response += "- Anomaly detection\n"
+                    response += "- System recommendations\n"
+                    response += "- Overall system status\n\n"
+                    if not self.llm_analyzer.is_available():
+                        response += "💡 *For more detailed AI responses, make sure Ollama is running or set API keys.*\n\n"
+                    response += "Try asking: 'What's my CPU usage?' or 'Are there any anomalies?'"
+        
+        # Ensure response is always a string (never None)
+        if response is None:
+            response = "I'm sorry, I couldn't generate a response. Please try again."
+        response = str(response).strip()
+        if not response:
+            response = "I'm sorry, I couldn't generate a response. Please try again."
         
         # Add messages in new format
-        history.append({"role": "user", "content": message})
+        history.append({"role": "user", "content": str(message).strip()})
         history.append({"role": "assistant", "content": response})
         return "", history
     
@@ -286,7 +396,11 @@ class TelemetryGUI:
                 status_icon = "🔴" if data.get('status') == 'high' else "🟡" if data.get('status') == 'moderate' else "🟢"
                 value = data.get('usage', data.get('average', 'N/A'))
                 if isinstance(value, (int, float)):
-                    result += f"{status_icon} **{metric.upper()}**: {value:.2f}% ({data.get('status', 'unknown')})\n"
+                    # Temperature should be displayed in Celsius, not as percentage
+                    if metric == 'temperature':
+                        result += f"{status_icon} **{metric.upper()}**: {value:.2f}°C ({data.get('status', 'unknown')})\n"
+                    else:
+                        result += f"{status_icon} **{metric.upper()}**: {value:.2f}% ({data.get('status', 'unknown')})\n"
                 else:
                     result += f"{status_icon} **{metric.upper()}**: {value} ({data.get('status', 'unknown')})\n"
         

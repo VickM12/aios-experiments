@@ -152,7 +152,7 @@ class TelemetryAnalyzer:
             anomaly_details.append({
                 'index': idx,
                 'timestamp': telemetry_data[idx].get('timestamp'),
-                'score': float(scores[idx]),
+                'score': float(all_scores[idx]),
                 'features': anomaly_row.to_dict(),
                 'deviations': deviations,
                 'top_factors': [
@@ -168,7 +168,7 @@ class TelemetryAnalyzer:
         return {
             'anomalies_detected': len(anomaly_indices),
             'anomaly_indices': anomaly_indices,
-            'anomaly_scores': scores.tolist(),
+            'anomaly_scores': all_scores.tolist(),
             'anomaly_percentage': (len(anomaly_indices) / len(telemetry_data)) * 100,
             'details': anomaly_details
         }

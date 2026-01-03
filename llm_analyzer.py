@@ -219,7 +219,48 @@ Please provide:
 Keep the response concise and actionable."""
 
         try:
-            if self.provider == "openai":
+            if self.provider == "ollama":
+                # Try using ollama library first
+                try:
+                    import ollama
+                    response = ollama.generate(
+                        model=self.model,
+                        prompt=f"You are a system monitoring expert analyzing telemetry data.\n\n{prompt}",
+                        options={
+                            "temperature": 0.7,
+                            "num_predict": 500
+                        }
+                    )
+                    result = response.get('response', 'Error: No response from model')
+                    return result.strip() if result else 'Error: Empty response from model'
+                except ImportError:
+                    # Fall back to API
+                    pass
+                except Exception as e:
+                    # If library call fails, try API
+                    pass
+                
+                # Fall back to API call
+                response = requests.post(
+                    f"{self.ollama_base_url}/api/generate",
+                    json={
+                        "model": self.model,
+                        "prompt": f"You are a system monitoring expert analyzing telemetry data.\n\n{prompt}",
+                        "stream": False,
+                        "options": {
+                            "temperature": 0.7,
+                            "num_predict": 500
+                        }
+                    },
+                    timeout=60
+                )
+                if response.status_code == 200:
+                    result = response.json().get('response', 'Error: No response from model')
+                    return result.strip() if result else 'Error: Empty response from model'
+                else:
+                    error_text = response.text[:200] if hasattr(response, 'text') else str(response.status_code)
+                    return f"Error: Ollama returned status {response.status_code}: {error_text}"
+            elif self.provider == "openai":
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[
