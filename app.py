@@ -27,7 +27,7 @@ class TelemetryApp:
         print(f"Collected {len(self.telemetry_history)} data points")
         return self.telemetry_history
     
-    def analyze(self):
+    def analyze(self, include_predictions: bool = False, prediction_steps: int = 10):
         """Perform AI analysis on collected data"""
         if not self.telemetry_history:
             print("No telemetry data available. Please collect data first.")
@@ -37,7 +37,11 @@ class TelemetryApp:
         print("AI ANALYSIS RESULTS")
         print("="*60)
         
-        analysis = self.analyzer.comprehensive_analysis(self.telemetry_history)
+        analysis = self.analyzer.comprehensive_analysis(
+            self.telemetry_history,
+            include_predictions=include_predictions,
+            prediction_steps=prediction_steps
+        )
         
         # Display results
         self._display_analysis(analysis)
@@ -169,6 +173,67 @@ class TelemetryApp:
             else:
                 print(clustering.get('message', 'No clustering data'))
         
+        # Predictions
+        if 'predictions' in analysis:
+            predictions = analysis['predictions']
+            print("\n🔮 ANOMALY PREDICTIONS")
+            print("-" * 60)
+            
+            if 'error' in predictions:
+                print(f"   ⚠️  {predictions['error']}")
+            else:
+                # Training info
+                if 'forecast_training' in predictions:
+                    training = predictions['forecast_training']
+                    if training.get('success'):
+                        print(f"   ✅ Models trained: {', '.join(training.get('models_trained', []))}")
+                        if 'performance' in training:
+                            print("   Model Performance:")
+                            for metric, perf in training['performance'].items():
+                                print(f"      • {metric}: R²={perf.get('r2_score', 0):.3f}, "
+                                      f"MAE={perf.get('mae', 0):.2f}")
+                
+                # Anomaly predictions
+                if 'anomaly_predictions' in predictions:
+                    pred_data = predictions['anomaly_predictions']
+                    if pred_data.get('success'):
+                        summary = pred_data.get('summary', {})
+                        print(f"\n   📊 Future Anomaly Forecast ({summary.get('total_steps', 0)} steps ahead):")
+                        print(f"      Predicted anomalies: {summary.get('predicted_anomalies', 0)} "
+                              f"({summary.get('anomaly_percentage', 0):.1f}%)")
+                        
+                        high_risk = summary.get('high_risk_steps', [])
+                        if high_risk:
+                            print(f"      ⚠️  High-risk steps: {high_risk[:10]}")  # Show first 10
+                        
+                        # Show detailed predictions
+                        anomaly_preds = pred_data.get('anomaly_predictions', [])
+                        if anomaly_preds:
+                            print(f"\n   🔍 Detailed Predictions (first 5 high-risk):")
+                            high_risk_preds = [p for p in anomaly_preds if p.get('likelihood') == 'high'][:5]
+                            for pred in high_risk_preds:
+                                timestamp = pred.get('timestamp', 'N/A')
+                                metrics = pred.get('predicted_metrics', {})
+                                print(f"      Step {pred.get('step', '?')} ({timestamp[:19]}):")
+                                print(f"         Risk: {pred.get('likelihood', 'unknown').upper()}, "
+                                      f"Score: {pred.get('anomaly_score', 0):.3f}")
+                                if metrics:
+                                    cpu = metrics.get('cpu_percent', 0)
+                                    mem = metrics.get('memory_percent', 0)
+                                    print(f"         Predicted: CPU={cpu:.1f}%, Memory={mem:.1f}%")
+                
+                # Pattern analysis
+                if 'anomaly_patterns' in predictions:
+                    patterns = predictions['anomaly_patterns']
+                    if patterns.get('patterns_found'):
+                        print(f"\n   📈 Historical Anomaly Patterns:")
+                        if patterns.get('most_common_hour') is not None:
+                            print(f"      Most common hour: {patterns['most_common_hour']}:00")
+                        if patterns.get('average_interval'):
+                            print(f"      Average interval: {patterns['average_interval']:.1f} samples")
+                        if patterns.get('min_interval') and patterns.get('max_interval'):
+                            print(f"      Interval range: {patterns['min_interval']:.0f}-{patterns['max_interval']:.0f} samples")
+        
         print("\n" + "="*60)
     
     def save_data(self, filename: str = None):
@@ -268,6 +333,10 @@ def main():
                        help='Generate visualizations (interactive HTML dashboard)')
     parser.add_argument('--show-plot', action='store_true', 
                        help='Display static plots in a window (requires GUI)')
+    parser.add_argument('--predict', action='store_true', 
+                       help='Enable anomaly prediction (requires at least 20 data points)')
+    parser.add_argument('--prediction-steps', type=int, default=10, 
+                       help='Number of steps ahead to predict (default: 10)')
     
     args = parser.parse_args()
     
@@ -283,7 +352,10 @@ def main():
             print("No data to analyze. Collecting sample data first...")
             app.collect_sample(args.duration, args.interval)
         
-        analysis = app.analyze()
+        analysis = app.analyze(
+            include_predictions=args.predict,
+            prediction_steps=args.prediction_steps
+        )
         if args.save_analysis and analysis:
             app.save_analysis(analysis)
         
@@ -296,7 +368,10 @@ def main():
         if args.save_data:
             app.save_data()
         if args.save_analysis:
-            analysis = app.analyze()
+            analysis = app.analyze(
+                include_predictions=args.predict,
+                prediction_steps=args.prediction_steps
+            )
             if analysis:
                 app.save_analysis(analysis)
 

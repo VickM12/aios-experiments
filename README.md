@@ -19,6 +19,7 @@ An AI-powered application that collects machine telemetry data from system senso
   - **Clustering Analysis**: K-means clustering to identify system states
   - **Trend Analysis**: Statistical analysis of metric trends over time
   - **Performance Insights**: Real-time recommendations and warnings
+  - **Anomaly Prediction**: Forecasts future anomalies using machine learning models
 
 - **Visualization**
   - Static matplotlib plots
@@ -53,6 +54,12 @@ python app.py --mode monitor --duration 300
 
 # Save collected data and analysis
 python app.py --save-data --save-analysis
+
+# Enable anomaly prediction (forecasts future anomalies)
+python app.py --predict --duration 120
+
+# Predict 20 steps ahead with visualization
+python app.py --predict --prediction-steps 20 --visualize
 ```
 
 ### Command Line Options
@@ -68,20 +75,48 @@ python app.py --save-data --save-analysis
 - `--save-data`: Save collected telemetry data to JSON file
 - `--save-analysis`: Save analysis results to JSON file
 
+### Anomaly Prediction
+
+The app can predict when anomalies might occur in the future:
+
+```bash
+# Enable predictions (requires at least 20 data points)
+python app.py --predict --duration 120
+
+# Predict further ahead (20 steps)
+python app.py --predict --prediction-steps 20
+
+# Full analysis with predictions and visualization
+python app.py --predict --visualize --duration 120
+```
+
+The prediction system:
+- Trains Random Forest models on historical telemetry patterns
+- Forecasts future metric values (CPU, Memory, Disk)
+- Predicts anomaly likelihood for each future step
+- Identifies historical patterns (e.g., most common hour for anomalies)
+- Provides risk assessments (high/medium/low)
+
 ### Programmatic Usage
 
 ```python
 from telemetry_collector import TelemetryCollector
 from ai_analyzer import TelemetryAnalyzer
 from visualizer import TelemetryVisualizer
+from anomaly_predictor import AnomalyPredictor
 
 # Collect data
 collector = TelemetryCollector()
 data = collector.collect_continuous(duration=60, interval=1.0)
 
-# Analyze
+# Analyze with predictions
 analyzer = TelemetryAnalyzer()
-analysis = analyzer.comprehensive_analysis(data)
+analysis = analyzer.comprehensive_analysis(data, include_predictions=True, prediction_steps=10)
+
+# Use predictor directly
+predictor = AnomalyPredictor()
+train_result = predictor.train_forecast_models(data)
+future_predictions = predictor.predict_future_values(data, steps_ahead=10)
 
 # Visualize
 visualizer = TelemetryVisualizer()

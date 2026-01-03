@@ -298,13 +298,48 @@ class TelemetryAnalyzer:
         
         return insights
     
-    def comprehensive_analysis(self, telemetry_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def comprehensive_analysis(self, telemetry_data: List[Dict[str, Any]], 
+                                include_predictions: bool = False,
+                                prediction_steps: int = 10) -> Dict[str, Any]:
         """Perform comprehensive analysis combining all methods"""
-        return {
+        result = {
             'anomaly_detection': self.detect_anomalies(telemetry_data),
             'clustering': self.cluster_analysis(telemetry_data),
             'trend_analysis': self.trend_analysis(telemetry_data),
             'performance_insights': self.performance_insights(telemetry_data),
             'data_points_analyzed': len(telemetry_data),
         }
+        
+        # Add predictions if requested
+        if include_predictions and len(telemetry_data) >= 20:
+            try:
+                from anomaly_predictor import AnomalyPredictor
+                predictor = AnomalyPredictor()
+                
+                # Train models
+                anomaly_indices = result['anomaly_detection'].get('anomaly_indices', [])
+                train_result = predictor.train_forecast_models(telemetry_data, anomaly_indices)
+                
+                if train_result.get('success'):
+                    # Predict future anomalies
+                    anomaly_pred = predictor.predict_anomaly_likelihood(
+                        telemetry_data, 
+                        self.anomaly_detector,
+                        steps_ahead=prediction_steps
+                    )
+                    
+                    # Analyze patterns
+                    patterns = predictor.analyze_anomaly_patterns(telemetry_data, anomaly_indices)
+                    
+                    result['predictions'] = {
+                        'forecast_training': train_result,
+                        'anomaly_predictions': anomaly_pred,
+                        'anomaly_patterns': patterns
+                    }
+            except Exception as e:
+                result['predictions'] = {
+                    'error': f'Prediction failed: {str(e)}'
+                }
+        
+        return result
 
