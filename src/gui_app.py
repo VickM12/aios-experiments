@@ -821,16 +821,34 @@ class TelemetryGUI:
         
         return fig
     
-    def analyze_data(self, use_llm: bool = False):
+    def analyze_data(self, use_llm: bool = False, include_predictions: bool = False, prediction_steps: int = 10):
         """Run AI analysis on collected data
         
         Args:
             use_llm: If True, include LLM-powered insights and explanations
+            include_predictions: If True, include anomaly predictions
+            prediction_steps: Number of steps ahead to predict (requires at least 20 data points)
         """
         if len(self.telemetry_history) < 10:
             return "Need at least 10 data points for analysis. Please collect more data."
         
-        analysis = self.analyzer.comprehensive_analysis(self.telemetry_history)
+        # Check if we have enough data for predictions
+        if include_predictions and len(self.telemetry_history) < 20:
+            return f"Need at least 20 data points for predictions. Currently have {len(self.telemetry_history)}. Please collect more data."
+        
+        # Show initial status
+        status_msg = "🔄 Running AI analysis..."
+        if include_predictions:
+            status_msg += " (including predictions - this may take a moment)"
+        if use_llm:
+            status_msg += " (with LLM insights - this may take longer)"
+        
+        # Run analysis
+        analysis = self.analyzer.comprehensive_analysis(
+            self.telemetry_history,
+            include_predictions=include_predictions,
+            prediction_steps=prediction_steps
+        )
         
         # Archive if enabled
         system_logs = []
@@ -953,6 +971,50 @@ class TelemetryGUI:
         if anomaly.get('anomalies_detected', 0) > 0:
             result += f"\n### 🔍 Anomalies Detected\n"
             result += f"- Found {anomaly['anomalies_detected']} anomalies ({anomaly.get('anomaly_percentage', 0):.1f}%)\n"
+        
+        # Predictions
+        if 'predictions' in analysis:
+            predictions = analysis['predictions']
+            if 'error' in predictions:
+                result += f"\n### 🔮 Anomaly Predictions\n"
+                result += f"⚠️ {predictions['error']}\n"
+            elif 'anomaly_predictions' in predictions:
+                pred_data = predictions['anomaly_predictions']
+                if pred_data.get('success'):
+                    summary = pred_data.get('summary', {})
+                    result += f"\n### 🔮 Anomaly Predictions ({summary.get('total_steps', 0)} steps ahead)\n"
+                    result += f"- **Predicted anomalies:** {summary.get('predicted_anomalies', 0)} ({summary.get('anomaly_percentage', 0):.1f}%)\n"
+                    
+                    high_risk = summary.get('high_risk_steps', [])
+                    if high_risk:
+                        result += f"- **⚠️ High-risk steps:** {', '.join(map(str, high_risk[:10]))}\n"
+                    
+                    # Show detailed predictions for high-risk steps
+                    anomaly_preds = pred_data.get('anomaly_predictions', [])
+                    if anomaly_preds:
+                        high_risk_preds = [p for p in anomaly_preds if p.get('likelihood') == 'high'][:5]
+                        if high_risk_preds:
+                            result += f"\n**High-Risk Predictions:**\n"
+                            for pred in high_risk_preds:
+                                timestamp = pred.get('timestamp', 'N/A')
+                                if isinstance(timestamp, str) and len(timestamp) > 19:
+                                    timestamp = timestamp[:19]
+                                metrics = pred.get('predicted_metrics', {})
+                                result += f"- **Step {pred.get('step', '?')}** ({timestamp}):\n"
+                                result += f"  - Risk: {pred.get('likelihood', 'unknown').upper()}, Score: {pred.get('anomaly_score', 0):.3f}\n"
+                                if metrics:
+                                    cpu = metrics.get('cpu_percent', 0)
+                                    mem = metrics.get('memory_percent', 0)
+                                    disk = metrics.get('disk_percent', 0)
+                                    result += f"  - Predicted: CPU={cpu:.1f}%, Memory={mem:.1f}%, Disk={disk:.1f}%\n"
+                    
+                    # Show anomaly patterns if available
+                    if 'anomaly_patterns' in predictions:
+                        patterns = predictions['anomaly_patterns']
+                        if patterns.get('success') and patterns.get('patterns'):
+                            result += f"\n**Anomaly Patterns Detected:**\n"
+                            for pattern in patterns['patterns'][:3]:  # Show top 3 patterns
+                                result += f"- {pattern.get('description', 'Pattern')}\n"
         
         # Recommendations
         if insights.get('recommendations'):
@@ -1291,6 +1353,33 @@ class TelemetryGUI:
                             with gr.Row():
                                 analyze_btn = gr.Button("🔍 Run AI Analysis", variant="secondary")
                                 analyze_llm_btn = gr.Button("🤖 AI + LLM", variant="primary")
+                            
+                            # Prediction options
+                            with gr.Row():
+                                enable_predictions = gr.Checkbox(
+                                    value=False,
+                                    label="🔮 Include Predictions",
+                                    info="Predict future anomalies (requires 20+ data points)"
+                                )
+                                prediction_steps = gr.Slider(
+                                    minimum=5,
+                                    maximum=50,
+                                    value=10,
+                                    step=5,
+                                    label="Prediction Steps",
+                                    visible=False
+                                )
+                            
+                            # Show prediction steps slider when predictions are enabled
+                            def toggle_prediction_steps(enable):
+                                return gr.update(visible=enable)
+                            
+                            enable_predictions.change(
+                                fn=toggle_prediction_steps,
+                                inputs=enable_predictions,
+                                outputs=prediction_steps
+                            )
+                            
                             analysis_output = gr.Markdown()
                             
                             # Show current LLM status (read-only, full config in Settings)
@@ -1432,22 +1521,42 @@ class TelemetryGUI:
                 # Auto-refresh not supported - user will need to click Refresh
                 # This is expected in some Gradio versions
                 pass
-            def run_standard_analysis():
+            def run_standard_analysis(enable_pred, steps):
                 """Run standard AI analysis without LLM"""
-                return self.analyze_data(use_llm=False)
+                # Show immediate feedback
+                status = "## 🔄 Running AI Analysis...\n\n"
+                if enable_pred:
+                    status += "⏳ *Training prediction models and analyzing data... This may take a moment.*\n\n"
+                else:
+                    status += "⏳ *Analyzing telemetry data...*\n\n"
+                yield status
+                
+                # Run the actual analysis
+                result = self.analyze_data(use_llm=False, include_predictions=enable_pred, prediction_steps=int(steps))
+                yield result
             
-            def run_llm_analysis():
+            def run_llm_analysis(enable_pred, steps):
                 """Run AI analysis with LLM insights"""
-                return self.analyze_data(use_llm=True)
+                # Show immediate feedback
+                status = "## 🔄 Running AI + LLM Analysis...\n\n"
+                if enable_pred:
+                    status += "⏳ *Training prediction models, analyzing data, and generating LLM insights... This may take longer.*\n\n"
+                else:
+                    status += "⏳ *Analyzing data and generating LLM insights... This may take a moment.*\n\n"
+                yield status
+                
+                # Run the actual analysis
+                result = self.analyze_data(use_llm=True, include_predictions=enable_pred, prediction_steps=int(steps))
+                yield result
             
             analyze_btn.click(
                 fn=run_standard_analysis,
-                inputs=None,
+                inputs=[enable_predictions, prediction_steps],
                 outputs=analysis_output
             )
             analyze_llm_btn.click(
                 fn=run_llm_analysis,
-                inputs=None,
+                inputs=[enable_predictions, prediction_steps],
                 outputs=analysis_output
             )
         

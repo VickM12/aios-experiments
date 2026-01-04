@@ -424,7 +424,7 @@ class TelemetryAnalyzer:
         # Add predictions if requested
         if include_predictions and len(telemetry_data) >= 20:
             try:
-                from anomaly_predictor import AnomalyPredictor
+                from .anomaly_predictor import AnomalyPredictor
                 predictor = AnomalyPredictor()
                 
                 # Train models
