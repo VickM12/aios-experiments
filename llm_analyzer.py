@@ -274,8 +274,12 @@ Keep the response concise and actionable."""
                     ]
                 )
                 return response.content[0].text
+        except requests.exceptions.Timeout:
+            return self._generate_fallback_response(context, "LLM request timed out while analyzing anomalies")
+        except requests.exceptions.RequestException as e:
+            return self._generate_fallback_response(context, f"LLM connection error: {str(e)}")
         except Exception as e:
-            return f"Error getting LLM explanation: {str(e)}"
+            return self._generate_fallback_response(context, f"LLM error: {str(e)}")
     
     def analyze_performance(self, telemetry_data: List[Dict[str, Any]], 
                            analysis: Dict[str, Any],
@@ -287,21 +291,14 @@ Keep the response concise and actionable."""
         # Build comprehensive context
         context = self._build_comprehensive_context(telemetry_data, analysis, system_info)
         
-        prompt = f"""Analyze this system's performance based on comprehensive telemetry data:
+        context_str = json.dumps(context, indent=1, default=str)
+        
+        prompt = f"""Analyze system performance based on telemetry data:
 
-Complete System Context:
-{json.dumps(context, indent=2, default=str)}
+Data:
+{context_str}
 
-Provide:
-1. Overall system health assessment
-2. Any concerning patterns or trends
-3. Specific recommendations for optimization
-4. Expected vs actual performance
-5. Resource utilization analysis (CPU, memory, disk, network, processes)
-6. Temperature and power considerations
-7. System-specific insights based on hardware configuration
-
-Keep response concise and technical but understandable, referencing specific data points and trends."""
+Provide: 1) System health assessment 2) Concerning patterns 3) Optimization recommendations 4) Resource utilization analysis. Keep response concise."""
 
         try:
             if self.provider == "ollama":
@@ -361,8 +358,12 @@ Keep response concise and technical but understandable, referencing specific dat
                     ]
                 )
                 return response.content[0].text
+        except requests.exceptions.Timeout:
+            return self._generate_fallback_response(context, "LLM request timed out")
+        except requests.exceptions.RequestException as e:
+            return self._generate_fallback_response(context, f"LLM connection error: {str(e)}")
         except Exception as e:
-            return f"Error getting LLM analysis: {str(e)}"
+            return self._generate_fallback_response(context, f"LLM error: {str(e)}")
     
     def _build_comprehensive_context(self, telemetry_data: List[Dict[str, Any]], 
                                     analysis: Dict[str, Any] = None,
@@ -541,6 +542,94 @@ Keep response concise and technical but understandable, referencing specific dat
         
         return context
     
+    def _generate_fallback_response(self, context: Dict[str, Any], error_msg: str) -> str:
+        """Generate a fallback response with telemetry summary when LLM fails"""
+        response = f"⚠️ **{error_msg}**\n\n"
+        response += "Here's a summary of your system telemetry:\n\n"
+        
+        # Latest telemetry
+        latest = context.get('latest_telemetry', {})
+        if latest:
+            response += "**Current System Status:**\n"
+            if 'cpu_percent' in latest:
+                response += f"- CPU: {latest['cpu_percent']:.1f}%\n"
+            if 'memory_percent' in latest:
+                response += f"- Memory: {latest['memory_percent']:.1f}%\n"
+            if 'disk_percent' in latest:
+                response += f"- Disk: {latest['disk_percent']:.1f}%\n"
+            if 'avg_temperature_c' in latest:
+                response += f"- Temperature: {latest['avg_temperature_c']:.1f}°C\n"
+            if 'network_sent_mb' in latest and 'network_recv_mb' in latest:
+                response += f"- Network: {latest['network_sent_mb']:.1f} MB sent, {latest['network_recv_mb']:.1f} MB received\n"
+            if 'power' in latest:
+                power = latest['power']
+                if 'gpu_watts' in power:
+                    response += f"- GPU Power: {power['gpu_watts']:.1f}W\n"
+                if 'cpu_energy_joules' in power:
+                    response += f"- CPU Energy: {power['cpu_energy_joules']:.1f}J\n"
+            if 'battery_percent' in latest:
+                response += f"- Battery: {latest['battery_percent']}% ({'Charging' if latest.get('battery_plugged') else 'Discharging'})\n"
+            if 'total_processes' in latest:
+                response += f"- Total Processes: {latest['total_processes']}\n"
+                if 'top_processes' in latest and latest['top_processes']:
+                    response += "- Top Processes:\n"
+                    for proc in latest['top_processes'][:3]:
+                        proc_cpu = proc.get('cpu_percent', 0) or 0
+                        if proc_cpu > 0:
+                            response += f"  • {proc.get('name', 'unknown')} (PID {proc.get('pid', 'N/A')}): {proc_cpu:.1f}% CPU\n"
+            response += "\n"
+        
+        # Summary statistics
+        summary = context.get('telemetry_summary', {})
+        if summary:
+            response += "**Session Summary:**\n"
+            if 'cpu' in summary:
+                cpu = summary['cpu']
+                response += f"- CPU: {cpu['min']:.1f}% - {cpu['max']:.1f}% (avg: {cpu['avg']:.1f}%)\n"
+            if 'memory' in summary:
+                mem = summary['memory']
+                response += f"- Memory: {mem['min']:.1f}% - {mem['max']:.1f}% (avg: {mem['avg']:.1f}%)\n"
+            if 'gpu_power_watts' in summary:
+                gpu = summary['gpu_power_watts']
+                response += f"- GPU Power: {gpu['min']:.1f}W - {gpu['max']:.1f}W (avg: {gpu['avg']:.1f}W)\n"
+            if 'cpu_energy_joules' in summary:
+                cpu_e = summary['cpu_energy_joules']
+                response += f"- CPU Energy: {cpu_e['min']:.1f}J - {cpu_e['max']:.1f}J (avg: {cpu_e['avg']:.1f}J)\n"
+            response += "\n"
+        
+        # Analysis results
+        analysis = context.get('analysis', {})
+        if analysis:
+            if analysis.get('anomalies_detected', 0) > 0:
+                response += f"**Anomalies:** {analysis['anomalies_detected']} detected ({analysis.get('anomaly_percentage', 0):.1f}%)\n"
+                if analysis.get('top_anomaly_factors'):
+                    response += f"- Top factors: {', '.join(analysis['top_anomaly_factors'])}\n"
+            if analysis.get('warnings'):
+                response += "**Warnings:**\n"
+                for warning in analysis['warnings']:
+                    response += f"- {warning}\n"
+            if analysis.get('recommendations'):
+                response += "**Recommendations:**\n"
+                for rec in analysis['recommendations']:
+                    response += f"- {rec}\n"
+            response += "\n"
+        
+        # System info
+        sys_info = context.get('system_info', {})
+        if sys_info:
+            response += "**System Information:**\n"
+            response += f"- OS: {sys_info.get('os', 'Unknown')} {sys_info.get('os_release', '')}\n"
+            response += f"- CPU: {sys_info.get('cpu_model', 'Unknown')}\n"
+            response += f"- Cores: {sys_info.get('cpu_cores', 'Unknown')}\n"
+            response += f"- Memory: {sys_info.get('memory_gb', 0):.1f} GB\n"
+            if sys_info.get('gpu'):
+                response += f"- GPU: {sys_info['gpu'][0] if sys_info['gpu'] else 'Unknown'}\n"
+            response += "\n"
+        
+        response += "💡 *Tip: The LLM timed out, but you can still see your system status above. Try asking a more specific question or wait a moment and try again.*"
+        
+        return response
+    
     def answer_question(self, question: str, telemetry_data: List[Dict[str, Any]], 
                        analysis: Dict[str, Any] = None,
                        system_info: Dict[str, Any] = None) -> str:
@@ -604,6 +693,10 @@ Provide a clear, accurate answer based on the data. Reference specific values wh
                     ]
                 )
                 return response.content[0].text
+        except requests.exceptions.Timeout:
+            return self._generate_fallback_response(context, "LLM request timed out")
+        except requests.exceptions.RequestException as e:
+            return self._generate_fallback_response(context, f"LLM connection error: {str(e)}")
         except Exception as e:
-            return f"Error getting answer: {str(e)}"
+            return self._generate_fallback_response(context, f"LLM error: {str(e)}")
 
