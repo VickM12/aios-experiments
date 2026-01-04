@@ -1,10 +1,12 @@
 """
 LLM Integration for Telemetry Analysis
 Provides natural language explanations and insights using LLMs
+Supports Ollama API, OpenAI, Anthropic, and local llama-cpp-python models
 """
 import os
 import subprocess
 import requests
+from pathlib import Path
 from typing import Dict, List, Any, Optional
 import json
 
@@ -12,17 +14,21 @@ import json
 class LLMAnalyzer:
     """Uses LLMs to provide natural language analysis of telemetry data"""
     
-    def __init__(self, provider: str = "ollama", model: str = None):
+    def __init__(self, provider: str = "ollama", model: str = None, model_path: Optional[str] = None):
         self.provider = provider
         self.model = model or self._get_default_model()
+        self.model_path = model_path
         self.api_key = None
         self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        self.llama_cpp_model = None
+        self.client = None  # Initialize client to None
         self._setup_client()
     
     def _get_default_model(self) -> str:
         """Get default model based on provider"""
         defaults = {
             "ollama": "llama3.2",
+            "llamacpp": "gemma3-1b.gguf",
             "openai": "gpt-4o-mini",
             "anthropic": "claude-3-haiku-20240307"
         }
@@ -102,6 +108,98 @@ class LLMAnalyzer:
                         self.client = None
                 except:
                     self.client = None
+        elif self.provider == "llamacpp":
+            # Setup llama-cpp-python
+            try:
+                from llama_cpp import Llama
+                
+                # Determine model path
+                # __file__ is src/llm_analyzer.py, so parent.parent is project root
+                project_root = Path(__file__).parent.parent
+                
+                if self.model_path:
+                    model_path = Path(self.model_path)
+                    if not model_path.is_absolute():
+                        # If relative path, make it relative to project root
+                        model_path = project_root / model_path
+                else:
+                    # Look in models directory
+                    models_dir = project_root / "models"
+                    model_path = models_dir / self.model
+                
+                # Resolve to absolute path for better error messages
+                model_path = model_path.resolve()
+                
+                if not model_path.exists():
+                    # Try without .gguf extension if model doesn't have one
+                    if not model_path.suffix or model_path.suffix != '.gguf':
+                        model_path_with_ext = model_path.with_suffix('.gguf')
+                        if model_path_with_ext.exists():
+                            model_path = model_path_with_ext
+                        else:
+                            # Try adding .gguf if no extension
+                            if not model_path.suffix:
+                                model_path = model_path.with_suffix('.gguf')
+                    
+                    if not model_path.exists():
+                        print(f"Warning: Model file not found at {model_path}")
+                        print(f"  Searched in: {project_root / 'models'}")
+                        print(f"  Model name: {self.model}")
+                        print(f"  Please download the model first using: python scripts/download_model.py")
+                        self.client = None
+                        self.llama_cpp_model = None
+                        return
+                
+                # Model file exists, try to load it
+                print(f"Loading llama-cpp model from {model_path}")
+                try:
+                    self.llama_cpp_model = Llama(
+                        model_path=str(model_path),
+                        n_ctx=4096,  # Context window
+                        n_threads=4,  # Number of threads
+                        verbose=False
+                    )
+                    self.client = "llamacpp"
+                    print(f"✓ Successfully loaded model: {model_path.name}")
+                except Exception as load_error:
+                    print(f"Error loading model file: {load_error}")
+                    print(f"  File exists: {model_path.exists()}")
+                    print(f"  File size: {model_path.stat().st_size / (1024**2):.1f} MB" if model_path.exists() else "N/A")
+                    import traceback
+                    traceback.print_exc()
+                    self.client = None
+                    self.llama_cpp_model = None
+            except ImportError as import_err:
+                print("Warning: llama-cpp-python not installed. Install with: pip install llama-cpp-python")
+                print(f"  Import error: {import_err}")
+                self.client = None
+                self.llama_cpp_model = None
+            except Exception as e:
+                print(f"Error setting up llama-cpp model: {e}")
+                import traceback
+                traceback.print_exc()
+                self.client = None
+                self.llama_cpp_model = None
+        elif self.provider == "openai":
+            try:
+                import openai
+                self.api_key = os.getenv("OPENAI_API_KEY")
+                if self.api_key:
+                    self.client = openai.OpenAI(api_key=self.api_key)
+                else:
+                    self.client = None
+            except ImportError:
+                self.client = None
+        elif self.provider == "anthropic":
+            try:
+                from anthropic import Anthropic
+                self.api_key = os.getenv("ANTHROPIC_API_KEY")
+                if self.api_key:
+                    self.client = Anthropic(api_key=self.api_key)
+                else:
+                    self.client = None
+            except ImportError:
+                self.client = None
     
     def _select_model(self, model_names: list):
         """Select the best model from available models"""
@@ -130,6 +228,153 @@ class LLMAnalyzer:
             # If still not found, use first available (keep full name)
             if not model_found and model_names:
                 self.model = model_names[0]
+    
+    def _setup_client(self):
+        """Setup the LLM client"""
+        if self.provider == "ollama":
+            # Try using the ollama Python library first
+            try:
+                import ollama
+                # Try to list models using the library
+                try:
+                    models_list = ollama.list()
+                    model_names = [m.get('name', '') for m in models_list.get('models', [])]
+                except:
+                    # Fall back to API call
+                    response = requests.get(f"{self.ollama_base_url}/api/tags", timeout=2)
+                    if response.status_code == 200:
+                        models = response.json().get('models', [])
+                        model_names = [m.get('name', '') for m in models]
+                    else:
+                        model_names = []
+                
+                if not model_names:
+                    # No models available via library, try direct API
+                    try:
+                        response = requests.get(f"{self.ollama_base_url}/api/tags", timeout=2)
+                        if response.status_code == 200:
+                            models = response.json().get('models', [])
+                            model_names = [m.get('name', '') for m in models]
+                    except:
+                        model_names = []
+                    
+                    if not model_names:
+                        # Still no models - but set client to "ollama" anyway
+                        # User might need to pull models, but we'll allow them to try
+                        self.client = "ollama"
+                        # Try common model names that might work
+                        common_models = ['llama3.2', 'llama2', 'alpaca', 'llama3.2:latest', 'llama2:latest', 'alpaca:latest']
+                        self.model = self.model or 'llama3.2'  # Use default
+                    else:
+                        self.client = "ollama"
+                        self._select_model(model_names)
+                else:
+                    self.client = "ollama"
+                    self._select_model(model_names)
+            except ImportError:
+                # ollama library not installed, use API only
+                try:
+                    response = requests.get(f"{self.ollama_base_url}/api/tags", timeout=2)
+                    if response.status_code == 200:
+                        models = response.json().get('models', [])
+                        model_names = [m.get('name', '') for m in models]
+                        if model_names:
+                            self.client = "ollama"
+                            self._select_model(model_names)
+                        else:
+                            self.client = None
+                    else:
+                        self.client = None
+                except Exception:
+                    self.client = None
+            except Exception as e:
+                # Any other error, try API as fallback
+                try:
+                    response = requests.get(f"{self.ollama_base_url}/api/tags", timeout=2)
+                    if response.status_code == 200:
+                        models = response.json().get('models', [])
+                        model_names = [m.get('name', '') for m in models]
+                        if model_names:
+                            self.client = "ollama"
+                            self._select_model(model_names)
+                        else:
+                            self.client = None
+                    else:
+                        self.client = None
+                except:
+                    self.client = None
+        elif self.provider == "llamacpp":
+            # Setup llama-cpp-python
+            try:
+                from llama_cpp import Llama
+                
+                # Determine model path
+                # __file__ is src/llm_analyzer.py, so parent.parent is project root
+                project_root = Path(__file__).parent.parent
+                
+                if self.model_path:
+                    model_path = Path(self.model_path)
+                    if not model_path.is_absolute():
+                        # If relative path, make it relative to project root
+                        model_path = project_root / model_path
+                else:
+                    # Look in models directory
+                    models_dir = project_root / "models"
+                    model_path = models_dir / self.model
+                
+                # Resolve to absolute path for better error messages
+                model_path = model_path.resolve()
+                
+                if not model_path.exists():
+                    # Try without .gguf extension if model doesn't have one
+                    if not model_path.suffix or model_path.suffix != '.gguf':
+                        model_path_with_ext = model_path.with_suffix('.gguf')
+                        if model_path_with_ext.exists():
+                            model_path = model_path_with_ext
+                        else:
+                            # Try adding .gguf if no extension
+                            if not model_path.suffix:
+                                model_path = model_path.with_suffix('.gguf')
+                    
+                    if not model_path.exists():
+                        print(f"Warning: Model file not found at {model_path}")
+                        print(f"  Searched in: {project_root / 'models'}")
+                        print(f"  Model name: {self.model}")
+                        print(f"  Please download the model first using: python scripts/download_model.py")
+                        self.client = None
+                        self.llama_cpp_model = None
+                        return
+                
+                # Model file exists, try to load it
+                print(f"Loading llama-cpp model from {model_path}")
+                try:
+                    self.llama_cpp_model = Llama(
+                        model_path=str(model_path),
+                        n_ctx=4096,  # Context window
+                        n_threads=4,  # Number of threads
+                        verbose=False
+                    )
+                    self.client = "llamacpp"
+                    print(f"✓ Successfully loaded model: {model_path.name}")
+                except Exception as load_error:
+                    print(f"Error loading model file: {load_error}")
+                    print(f"  File exists: {model_path.exists()}")
+                    print(f"  File size: {model_path.stat().st_size / (1024**2):.1f} MB" if model_path.exists() else "N/A")
+                    import traceback
+                    traceback.print_exc()
+                    self.client = None
+                    self.llama_cpp_model = None
+            except ImportError as import_err:
+                print("Warning: llama-cpp-python not installed. Install with: pip install llama-cpp-python")
+                print(f"  Import error: {import_err}")
+                self.client = None
+                self.llama_cpp_model = None
+            except Exception as e:
+                print(f"Error setting up llama-cpp model: {e}")
+                import traceback
+                traceback.print_exc()
+                self.client = None
+                self.llama_cpp_model = None
         elif self.provider == "openai":
             try:
                 import openai
@@ -153,7 +398,9 @@ class LLMAnalyzer:
     
     def is_available(self) -> bool:
         """Check if LLM is available"""
-        if self.provider == "ollama":
+        if self.provider == "llamacpp":
+            return self.llama_cpp_model is not None and self.client == "llamacpp"
+        elif self.provider == "ollama":
             # Check if Ollama server is running
             if self.client == "ollama":
                 return True
@@ -213,7 +460,19 @@ Please provide:
 Keep the response concise and actionable."""
 
         try:
-            if self.provider == "ollama":
+            if self.provider == "llamacpp" and self.llama_cpp_model:
+                # Use llama-cpp-python for local inference
+                full_prompt = f"You are a system monitoring expert analyzing telemetry data.\n\n{prompt}"
+                response = self.llama_cpp_model(
+                    full_prompt,
+                    max_tokens=1000,
+                    temperature=0.7,
+                    stop=["\n\n\n", "Human:", "User:"],
+                    echo=False
+                )
+                result = response.get('choices', [{}])[0].get('text', '')
+                return result.strip() if result else 'Error: Empty response from model'
+            elif self.provider == "ollama":
                 # Try using ollama library first
                 try:
                     import ollama
@@ -301,7 +560,19 @@ Data:
 Provide: 1) System health assessment 2) Concerning patterns 3) Optimization recommendations 4) Resource utilization analysis. Keep response concise."""
 
         try:
-            if self.provider == "ollama":
+            if self.provider == "llamacpp" and self.llama_cpp_model:
+                # Use llama-cpp-python for local inference
+                full_prompt = f"You are a system performance analyst.\n\n{prompt}"
+                response = self.llama_cpp_model(
+                    full_prompt,
+                    max_tokens=1000,
+                    temperature=0.7,
+                    stop=["\n\n\n", "Human:", "User:"],
+                    echo=False
+                )
+                result = response.get('choices', [{}])[0].get('text', '')
+                return result.strip() if result else 'Error: Empty response from model'
+            elif self.provider == "ollama":
                 # Try using ollama library first
                 try:
                     import ollama
@@ -653,7 +924,19 @@ Telemetry Data:
 Provide a clear, accurate answer based on the data. Reference specific values when relevant."""
 
         try:
-            if self.provider == "ollama":
+            if self.provider == "llamacpp" and self.llama_cpp_model:
+                # Use llama-cpp-python for local inference
+                full_prompt = f"You are a helpful system monitoring assistant.\n\n{prompt}"
+                response = self.llama_cpp_model(
+                    full_prompt,
+                    max_tokens=1000,
+                    temperature=0.7,
+                    stop=["\n\n\n", "Human:", "User:"],
+                    echo=False
+                )
+                result = response.get('choices', [{}])[0].get('text', '')
+                return result.strip() if result else 'Error: Empty response from model'
+            elif self.provider == "ollama":
                 response = requests.post(
                     f"{self.ollama_base_url}/api/generate",
                     json={

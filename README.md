@@ -28,14 +28,55 @@ An AI-powered application that collects machine telemetry data from system senso
 
 ## Installation
 
-1. Install dependencies:
+1. Create a virtual environment (recommended):
+```bash
+python3 -m venv .venv
+source .venv/bin/activate  # On Linux/Mac
+# or
+.venv\Scripts\activate  # On Windows
+```
+
+2. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-2. Run the application:
+3. (Optional) Download a local model for offline use:
+```bash
+# Download gemma3:1b model from Ollama and save locally
+python scripts/download_model.py --model gemma3:1b
+```
+
+4. Run the application:
 ```bash
 python app.py
+```
+
+## Project Structure
+
+```
+AIOS-experiment/
+├── src/                    # Source code modules
+│   ├── __init__.py
+│   ├── app.py             # Main CLI application
+│   ├── gui_app.py         # Gradio GUI application
+│   ├── telemetry_collector.py
+│   ├── ai_analyzer.py
+│   ├── llm_analyzer.py    # LLM integration (Ollama, OpenAI, Anthropic, llama-cpp)
+│   ├── visualizer.py
+│   ├── anomaly_predictor.py
+│   ├── os_integration.py
+│   ├── data_archive.py
+│   └── system_logs.py
+├── models/                 # Local model files (GGUF format)
+│   └── .gitkeep
+├── scripts/                # Utility scripts
+│   └── download_model.py  # Download models from Ollama
+├── telemetry_archive/     # Archived telemetry sessions
+├── app.py                 # Entry point for CLI
+├── gui.py                 # Entry point for GUI
+├── requirements.txt
+└── README.md
 ```
 
 ## Usage
@@ -168,7 +209,7 @@ Note: Some features may be limited on Windows:
 The app includes a web-based GUI with chat interface:
 
 ```bash
-python gui_app.py
+python gui.py
 ```
 
 This launches a web interface at `http://localhost:7860` with:

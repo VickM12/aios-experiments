@@ -2,18 +2,19 @@
 GUI Application with Chat Interface
 Web-based GUI for telemetry monitoring and AI chat
 """
+import os
 import gradio as gr
 import json
 import threading
 import time
 from datetime import datetime
 from typing import List, Dict, Any, Tuple
-from telemetry_collector import TelemetryCollector
-from ai_analyzer import TelemetryAnalyzer
-from visualizer import TelemetryVisualizer
-from llm_analyzer import LLMAnalyzer
-from data_archive import DataArchive
-from system_logs import SystemLogReader
+from .telemetry_collector import TelemetryCollector
+from .ai_analyzer import TelemetryAnalyzer
+from .visualizer import TelemetryVisualizer
+from .llm_analyzer import LLMAnalyzer
+from .data_archive import DataArchive
+from .system_logs import SystemLogReader
 import plotly.graph_objects as go
 import pandas as pd
 
@@ -21,11 +22,14 @@ import pandas as pd
 class TelemetryGUI:
     """GUI application with chat interface"""
     
-    def __init__(self, enable_archiving: bool = True):
+    def __init__(self, enable_archiving: bool = True, llm_provider: str = None, llm_model: str = None):
         self.collector = TelemetryCollector()
         self.analyzer = TelemetryAnalyzer()
         self.visualizer = TelemetryVisualizer()
-        self.llm_analyzer = LLMAnalyzer(provider="ollama")
+        # Allow provider to be set via environment variable or parameter
+        provider = llm_provider or os.getenv("LLM_PROVIDER", "ollama")
+        model = llm_model or os.getenv("LLM_MODEL", None)
+        self.llm_analyzer = LLMAnalyzer(provider=provider, model=model)
         self.telemetry_history = []
         self.is_monitoring = False
         self.monitor_thread = None
@@ -70,25 +74,82 @@ class TelemetryGUI:
             return "", history
         
         # Ensure history is in the correct format (list of dicts with role/content)
+        # Gradio Chatbot expects: [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
         if history:
             new_history = []
             for item in history:
                 if item is None:
                     continue
+                # Handle string format (legacy or corrupted)
+                if isinstance(item, str):
+                    try:
+                        import json
+                        # Try to parse if it's a JSON string
+                        parsed = json.loads(item)
+                        if isinstance(parsed, list):
+                            item = parsed
+                        elif isinstance(parsed, dict):
+                            item = parsed
+                    except:
+                        # If it's just a plain string, skip it (invalid format)
+                        continue
+                
+                # Handle tuple/list format (old Gradio format)
                 if isinstance(item, (tuple, list)) and len(item) == 2:
-                    # Convert tuple format to dict format
                     user_msg = item[0] if item[0] is not None else ""
                     assistant_msg = item[1] if item[1] is not None else ""
-                    if user_msg or assistant_msg:  # Only add non-empty messages
-                        new_history.append({"role": "user", "content": str(user_msg)})
-                        new_history.append({"role": "assistant", "content": str(assistant_msg)})
+                    # Extract text from dict format if needed
+                    if isinstance(user_msg, dict):
+                        user_msg = user_msg.get('text', user_msg.get('content', ''))
+                    if isinstance(assistant_msg, dict):
+                        assistant_msg = assistant_msg.get('text', assistant_msg.get('content', ''))
+                    user_msg = str(user_msg).strip()
+                    assistant_msg = str(assistant_msg).strip()
+                    if user_msg:
+                        new_history.append({"role": "user", "content": user_msg})
+                    if assistant_msg:
+                        new_history.append({"role": "assistant", "content": assistant_msg})
+                # Handle dict format (new Gradio format)
                 elif isinstance(item, dict):
-                    # Ensure content is not None
-                    content = item.get("content")
-                    if content is not None:
+                    # Handle nested dicts (corrupted format)
+                    if 'text' in item and isinstance(item['text'], (dict, list, str)):
+                        text = item['text']
+                        # If text is a string that looks like JSON, try to parse it
+                        if isinstance(text, str) and (text.startswith('[') or text.startswith('{')):
+                            try:
+                                import json
+                                text = json.loads(text)
+                            except:
+                                pass
+                        # If text is still a dict/list, extract the actual content
+                        if isinstance(text, dict):
+                            text = text.get('text', text.get('content', str(text)))
+                        elif isinstance(text, list) and len(text) > 0:
+                            # Get first item's text
+                            first = text[0]
+                            if isinstance(first, dict):
+                                text = first.get('text', first.get('content', str(first)))
+                            else:
+                                text = str(first)
+                        content = str(text).strip()
+                    else:
+                        content = item.get("content") or item.get("text", "")
+                        if isinstance(content, (dict, list)):
+                            # Extract from nested structure
+                            if isinstance(content, dict):
+                                content = content.get('text', content.get('content', str(content)))
+                            elif isinstance(content, list) and len(content) > 0:
+                                first = content[0]
+                                if isinstance(first, dict):
+                                    content = first.get('text', first.get('content', str(first)))
+                                else:
+                                    content = str(first)
+                        content = str(content).strip()
+                    
+                    if content:
                         new_history.append({
                             "role": item.get("role", "user"),
-                            "content": str(content)
+                            "content": content
                         })
             history = new_history
         else:
@@ -102,7 +163,35 @@ class TelemetryGUI:
         response = ""
         
         if "cpu" in message_lower or "processor" in message_lower:
-            if current_data:
+            # Check if user wants detailed explanation
+            wants_details = any(word in message_lower for word in ['tell me', 'explain', 'more', 'detail', 'in detail', 'about', 'what', 'how', 'why', 'please'])
+            
+            if wants_details and self.llm_analyzer.is_available() and len(self.telemetry_history) > 0:
+                # Use LLM for detailed CPU explanation
+                try:
+                    analysis = None
+                    if len(self.telemetry_history) >= 10:
+                        analysis = self.analyzer.comprehensive_analysis(self.telemetry_history)
+                    response = self.llm_analyzer.answer_question(
+                        message,
+                        self.telemetry_history,
+                        analysis,
+                        self.system_info
+                    )
+                except Exception as e:
+                    # Fall back to basic info
+                    if current_data:
+                        cpu = current_data.get('cpu', {})
+                        cpu_percent = cpu.get('cpu_percent', 0)
+                        response = f"**CPU Status:**\n"
+                        response += f"- Current usage: {cpu_percent:.1f}%\n"
+                        response += f"- Status: {'High' if cpu_percent > 80 else 'Moderate' if cpu_percent > 50 else 'Normal'}\n"
+                        if cpu.get('cpu_freq', {}).get('current'):
+                            response += f"- Frequency: {cpu['cpu_freq']['current']:.0f} MHz\n"
+                        response += f"\n⚠️ Error getting LLM response: {str(e)}"
+                    else:
+                        response = "No telemetry data available. Please start monitoring first."
+            elif current_data:
                 cpu = current_data.get('cpu', {})
                 cpu_percent = cpu.get('cpu_percent', 0)
                 response = f"**CPU Status:**\n"
@@ -110,6 +199,10 @@ class TelemetryGUI:
                 response += f"- Status: {'High' if cpu_percent > 80 else 'Moderate' if cpu_percent > 50 else 'Normal'}\n"
                 if cpu.get('cpu_freq', {}).get('current'):
                     response += f"- Frequency: {cpu['cpu_freq']['current']:.0f} MHz\n"
+                if wants_details and not self.llm_analyzer.is_available():
+                    response += f"\n💡 *For detailed explanations, make sure the LLM is available.*"
+                elif wants_details:
+                    response += f"\n💡 *Ask 'Tell me more about the CPU' or 'Explain the CPU in detail' for LLM analysis.*"
             else:
                 response = "No telemetry data available. Please start monitoring first."
         
@@ -197,7 +290,44 @@ class TelemetryGUI:
                 response = "No telemetry data available. Please start monitoring first."
         
         elif "process" in message_lower or "processes" in message_lower or "top process" in message_lower or "what's using" in message_lower:
-            if current_data:
+            # Check if user wants detailed explanation
+            wants_details = any(word in message_lower for word in ['tell me', 'explain', 'more', 'detail', 'in detail', 'about', 'what', 'how', 'why'])
+            
+            if wants_details and self.llm_analyzer.is_available() and len(self.telemetry_history) > 0:
+                # Use LLM for detailed process explanation
+                try:
+                    analysis = None
+                    if len(self.telemetry_history) >= 10:
+                        analysis = self.analyzer.comprehensive_analysis(self.telemetry_history)
+                    response = self.llm_analyzer.answer_question(
+                        message,
+                        self.telemetry_history,
+                        analysis,
+                        self.system_info
+                    )
+                except Exception as e:
+                    # Fall back to basic info
+                    if current_data:
+                        process_data = current_data.get('processes', {})
+                        if process_data:
+                            total = process_data.get('total_processes', 0)
+                            top_processes = process_data.get('top_processes', [])[:10]
+                            response = f"**Process Information:**\n"
+                            response += f"- Total processes: {total}\n\n"
+                            response += f"**Top CPU-consuming processes:**\n"
+                            for i, proc in enumerate(top_processes, 1):
+                                proc_name = proc.get('name', 'unknown')
+                                proc_cpu = proc.get('cpu_percent', 0) or 0
+                                proc_mem = proc.get('memory_percent', 0) or 0
+                                proc_pid = proc.get('pid', 'N/A')
+                                if proc_cpu > 0 or proc_mem > 0.1:
+                                    response += f"{i}. {proc_name} (PID {proc_pid}): CPU {proc_cpu:.1f}%, Memory {proc_mem:.2f}%\n"
+                            response += f"\n⚠️ Error getting LLM response: {str(e)}"
+                        else:
+                            response = "Process data not available."
+                    else:
+                        response = "No telemetry data available. Please start monitoring first."
+            elif current_data:
                 process_data = current_data.get('processes', {})
                 if process_data:
                     total = process_data.get('total_processes', 0)
@@ -213,6 +343,10 @@ class TelemetryGUI:
                         proc_pid = proc.get('pid', 'N/A')
                         if proc_cpu > 0 or proc_mem > 0.1:
                             response += f"{i}. {proc_name} (PID {proc_pid}): CPU {proc_cpu:.1f}%, Memory {proc_mem:.2f}%\n"
+                    if wants_details and not self.llm_analyzer.is_available():
+                        response += f"\n\n💡 *For detailed explanations, make sure the LLM is available.*"
+                    elif wants_details:
+                        response += f"\n\n💡 *Ask 'Tell me more about the processes' or 'Explain the processes in detail' for LLM analysis.*"
                 else:
                     response = "Process data not available."
             else:
@@ -387,8 +521,25 @@ class TelemetryGUI:
         if not response:
             response = "I'm sorry, I couldn't generate a response. Please try again."
         
-        # Add messages in new format
-        history.append({"role": "user", "content": str(message).strip()})
+        # Clean message - extract from nested format if needed
+        clean_message = str(message).strip()
+        if clean_message.startswith('[') or clean_message.startswith('{'):
+            try:
+                import json
+                parsed = json.loads(clean_message)
+                if isinstance(parsed, list) and len(parsed) > 0:
+                    first = parsed[0]
+                    if isinstance(first, dict):
+                        clean_message = first.get('text', first.get('content', str(first)))
+                    else:
+                        clean_message = str(first)
+                elif isinstance(parsed, dict):
+                    clean_message = parsed.get('text', parsed.get('content', str(parsed)))
+            except:
+                pass  # Keep original if parsing fails
+        
+        # Add messages in correct format (Gradio Chatbot expects list of dicts)
+        history.append({"role": "user", "content": clean_message})
         history.append({"role": "assistant", "content": response})
         return "", history
     
@@ -728,9 +879,16 @@ class TelemetryGUI:
                                 analyze_llm_btn = gr.Button("🤖 AI + LLM", variant="primary")
                             analysis_output = gr.Markdown()
                             model_info = self.llm_analyzer.get_model_info()
-                            gr.Markdown(f"**🤖 LLM:** {model_info}")
+                            provider_name = self.llm_analyzer.provider.upper()
+                            gr.Markdown(f"**🤖 LLM Provider:** {provider_name}")
+                            gr.Markdown(f"**Model:** {model_info}")
                             if not self.llm_analyzer.is_available():
-                                gr.Markdown("💡 *Ollama not detected. Start Ollama or set OPENAI_API_KEY/ANTHROPIC_API_KEY*")
+                                if self.llm_analyzer.provider == "llamacpp":
+                                    gr.Markdown("💡 *Local model not found. Download a model first: `python scripts/download_model.py`*")
+                                elif self.llm_analyzer.provider == "ollama":
+                                    gr.Markdown("💡 *Ollama not detected. Start Ollama (`ollama serve`) or use local model with `--llm-provider llamacpp`*")
+                                else:
+                                    gr.Markdown("💡 *LLM not available. Check API keys or model configuration.*")
                 
                 # Archive tab (if archiving is enabled)
                 if self.archive:
@@ -819,7 +977,24 @@ class TelemetryGUI:
 
 def main():
     """Launch the GUI application"""
-    gui = TelemetryGUI()
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="AIOS Telemetry GUI")
+    parser.add_argument("--llm-provider", default=None, 
+                       choices=["ollama", "llamacpp", "openai", "anthropic"],
+                       help="LLM provider to use (default: ollama, or LLM_PROVIDER env var)")
+    parser.add_argument("--llm-model", default=None,
+                       help="LLM model name (e.g., 'gemma3-1b.gguf' for llamacpp)")
+    parser.add_argument("--no-archive", action="store_true",
+                       help="Disable data archiving")
+    
+    args = parser.parse_args()
+    
+    gui = TelemetryGUI(
+        enable_archiving=not args.no_archive,
+        llm_provider=args.llm_provider,
+        llm_model=args.llm_model
+    )
     app = gui.create_interface()
     app.launch(server_name="0.0.0.0", server_port=7860, share=False)
 

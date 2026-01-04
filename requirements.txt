@@ -8,6 +8,7 @@ flask>=2.3.0
 python-dotenv>=1.0.0
 gradio>=4.0.0
 requests>=2.31.0
+llama-cpp-python>=0.2.0
 openai>=1.0.0; extra == "openai"
 anthropic>=0.18.0; extra == "anthropic"
 wmi>=1.5.1; sys_platform == "win32"
