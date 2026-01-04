@@ -15,27 +15,34 @@ from .visualizer import TelemetryVisualizer
 from .llm_analyzer import LLMAnalyzer
 from .data_archive import DataArchive
 from .system_logs import SystemLogReader
+from .config_manager import ConfigManager
 import plotly.graph_objects as go
 import pandas as pd
+import platform
 
 
 class TelemetryGUI:
     """GUI application with chat interface"""
     
     def __init__(self, enable_archiving: bool = True, llm_provider: str = None, llm_model: str = None):
+        self.config = ConfigManager()
         self.collector = TelemetryCollector()
         self.analyzer = TelemetryAnalyzer()
         self.visualizer = TelemetryVisualizer()
-        # Allow provider to be set via environment variable or parameter
-        provider = llm_provider or os.getenv("LLM_PROVIDER", "ollama")
-        model = llm_model or os.getenv("LLM_MODEL", None)
+        # Load LLM config from preferences or use provided/env vars
+        provider = llm_provider or self.config.get_llm_provider() or os.getenv("LLM_PROVIDER", "ollama")
+        model = llm_model or self.config.get_llm_model() or os.getenv("LLM_MODEL", None)
         self.llm_analyzer = LLMAnalyzer(provider=provider, model=model)
         self.telemetry_history = []
         self.is_monitoring = False
         self.monitor_thread = None
         self.system_info = None
-        self.archive = DataArchive() if enable_archiving else None
-        self.log_reader = SystemLogReader() if enable_archiving else None
+        # Load archive settings from config
+        archive_enabled = enable_archiving if enable_archiving is not None else self.config.get("archive.enabled", True)
+        self.archive = DataArchive(
+            retention_days=self.config.get("archive.retention_days", 30)
+        ) if archive_enabled else None
+        self.log_reader = SystemLogReader() if archive_enabled else None
         self.last_archived_session = None
     
     def update_llm_provider(self, provider: str, model: str = None) -> Tuple[str, str]:
@@ -87,33 +94,112 @@ class TelemetryGUI:
         return []
         
     def get_system_info_display(self):
-        """Get formatted system information"""
+        """Get formatted system information (compact version for main page)"""
         if not self.system_info:
             self.system_info = self.collector.get_system_info()
         
         info = self.system_info
-        html = "<div style='font-family: monospace;'>"
-        html += "<h2>🖥️ System Information</h2>"
+        html = "<div style='font-family: monospace; font-size: 0.9em;'>"
         
         if 'os' in info:
             os_info = info['os']
             html += f"<p><strong>OS:</strong> {os_info.get('system', 'Unknown')} {os_info.get('release', '')}</p>"
-            html += f"<p><strong>Machine:</strong> {os_info.get('machine', 'Unknown')}</p>"
         
         if 'cpu' in info:
             cpu_info = info['cpu']
-            html += f"<p><strong>CPU:</strong> {cpu_info.get('model', 'Unknown')}</p>"
-            html += f"<p><strong>Cores:</strong> {cpu_info.get('physical_cores', '?')} physical, {cpu_info.get('logical_cores', '?')} logical</p>"
+            html += f"<p><strong>CPU:</strong> {cpu_info.get('model', 'Unknown')[:40]}</p>"
+            html += f"<p><strong>Cores:</strong> {cpu_info.get('physical_cores', '?')}P/{cpu_info.get('logical_cores', '?')}L</p>"
         
         if 'memory' in info:
             mem_info = info['memory']
-            html += f"<p><strong>Memory:</strong> {mem_info.get('total_gb', 0):.2f} GB</p>"
-        
-        if 'gpu' in info and isinstance(info['gpu'], list) and info['gpu']:
-            for gpu in info['gpu']:
-                html += f"<p><strong>GPU:</strong> {gpu.get('vendor', '')} {gpu.get('model', '')}</p>"
+            html += f"<p><strong>Memory:</strong> {mem_info.get('total_gb', 0):.1f} GB</p>"
         
         html += "</div>"
+        return html
+    
+    def get_detected_system_type(self) -> str:
+        """Get detected system type"""
+        system = platform.system()
+        if system == "Windows":
+            return "Windows"
+        elif system == "Linux":
+            return "Linux"
+        elif system == "Darwin":
+            return "macOS"
+        return "Unknown"
+    
+    def get_welcome_page_content(self) -> str:
+        """Generate welcome page content with system detection"""
+        if not self.system_info:
+            self.system_info = self.collector.get_system_info()
+        
+        info = self.system_info
+        system_type = self.get_detected_system_type()
+        
+        # Build system details in a compact format with visible labels
+        details = []
+        if 'os' in info:
+            os_info = info['os']
+            os_str = f"{os_info.get('system', 'Unknown')} {os_info.get('release', '')}".strip()
+            if os_str and os_str != 'Unknown':
+                details.append(f"<span style='color: #1e40af; font-weight: 600;'>OS:</span> <span style='color: #374151;'>{os_str}</span>")
+            arch = os_info.get('machine', '')
+            if arch and arch != 'Unknown':
+                details.append(f"<span style='color: #1e40af; font-weight: 600;'>Arch:</span> <span style='color: #374151;'>{arch}</span>")
+        
+        if 'cpu' in info:
+            cpu_info = info['cpu']
+            cpu_model = cpu_info.get('model', 'Unknown')
+            if cpu_model and cpu_model != 'Unknown':
+                # Truncate long CPU names
+                if len(cpu_model) > 50:
+                    cpu_model = cpu_model[:47] + "..."
+                details.append(f"<span style='color: #1e40af; font-weight: 600;'>CPU:</span> <span style='color: #374151;'>{cpu_model}</span>")
+            cores = f"{cpu_info.get('physical_cores', '?')}P/{cpu_info.get('logical_cores', '?')}L"
+            if cores != '?P/?L':
+                details.append(f"<span style='color: #1e40af; font-weight: 600;'>Cores:</span> <span style='color: #374151;'>{cores}</span>")
+        
+        if 'memory' in info:
+            mem_info = info['memory']
+            mem_gb = mem_info.get('total_gb', 0)
+            if mem_gb > 0:
+                details.append(f"<span style='color: #1e40af; font-weight: 600;'>RAM:</span> <span style='color: #374151;'>{mem_gb:.1f} GB</span>")
+        
+        if 'gpu' in info and isinstance(info['gpu'], list) and info['gpu']:
+            gpu_list = []
+            for gpu in info['gpu'][:1]:  # Show only first GPU
+                vendor = gpu.get('vendor', '').strip()
+                model = gpu.get('model', '').strip()
+                if vendor or model:
+                    gpu_str = f"{vendor} {model}".strip()
+                    if len(gpu_str) > 40:
+                        gpu_str = gpu_str[:37] + "..."
+                    gpu_list.append(gpu_str)
+            if gpu_list:
+                details.append(f"<span style='color: #1e40af; font-weight: 600;'>GPU:</span> <span style='color: #374151;'>{gpu_list[0]}</span>")
+        
+        details_html = " <span style='color: #9ca3af; margin: 0 4px;'>•</span> ".join(details) if details else "<span style='color: #6b7280;'>System information unavailable</span>"
+        
+        html = f"""
+        <div style='max-width: 800px; margin: 0 auto; padding: 20px;'>
+            <h1 style='text-align: center; color: #2563eb; margin-bottom: 30px;'>🚀 Welcome to AIOS Telemetry Monitor</h1>
+            
+            <div style='background: #f0f9ff; border-left: 4px solid #2563eb; padding: 12px 15px; margin: 20px 0; border-radius: 4px;'>
+                <div style='display: flex; align-items: center; gap: 10px; margin-bottom: 10px;'>
+                    <h2 style='margin: 0; font-size: 1.1em; color: #1e3a8a; font-weight: 600;'>🖥️ Detected System</h2>
+                    <span style='font-size: 1.1em; font-weight: bold; color: #1e40af; background: #dbeafe; padding: 2px 8px; border-radius: 3px;'>{system_type}</span>
+                </div>
+                <div style='font-size: 0.95em; color: #1f2937; line-height: 1.8; font-family: system-ui, -apple-system, sans-serif;'>
+                    {details_html}
+                </div>
+            </div>
+            
+            <div style='margin: 30px 0;'>
+                <h2 style='font-size: 1.1em;'>📋 Quick Setup</h2>
+                <p style='color: #6b7280;'>Configure your preferences below. You can change these settings anytime from the Settings tab.</p>
+            </div>
+        </div>
+        """
         return html
     
     def chat_with_ai(self, message: str, history: List) -> Tuple[str, List]:
@@ -885,8 +971,174 @@ class TelemetryGUI:
             gr.Markdown("# 🤖 AI Telemetry Monitoring & Analysis")
             gr.Markdown("Monitor your system in real-time and chat with AI about your telemetry data")
             
+            # Define shared components that need to be updated from multiple tabs
+            llm_status_display = gr.Markdown(
+                value=f"**🤖 LLM:** {self.llm_analyzer.provider.upper()} - {self.llm_analyzer.get_model_info()}\n"
+                      f"**Status:** {'✓ Connected' if self.llm_analyzer.is_available() else '✗ Not available'}\n\n"
+                      f"💡 *Configure LLM settings in the Settings tab*"
+            )
+            
             # Create tabs for different sections
             with gr.Tabs():
+                # Welcome/Settings tab (show first if first run, otherwise show as Settings)
+                tab_name = "👋 Welcome" if self.config.is_first_run() else "⚙️ Settings"
+                with gr.TabItem(tab_name):
+                    welcome_content = gr.HTML(value=self.get_welcome_page_content())
+                    
+                    gr.Markdown("## 🤖 LLM Configuration")
+                    gr.Markdown("Configure your AI assistant provider and model")
+                    
+                    with gr.Row():
+                        llm_provider_dropdown = gr.Dropdown(
+                            choices=["ollama", "llamacpp", "openai", "anthropic"],
+                            value=self.llm_analyzer.provider,
+                            label="Provider",
+                            interactive=True
+                        )
+                        llm_model_dropdown = gr.Dropdown(
+                            choices=self.get_available_models(self.llm_analyzer.provider),
+                            value=self.llm_analyzer.model,
+                            label="Model",
+                            interactive=True,
+                            allow_custom_value=True
+                        )
+                    
+                    def update_model_choices(provider):
+                        """Update model dropdown when provider changes"""
+                        models = self.get_available_models(provider)
+                        default_model = models[0] if models else ""
+                        return {
+                            "choices": models,
+                            "value": default_model
+                        }
+                    
+                    llm_provider_dropdown.change(
+                        fn=update_model_choices,
+                        inputs=llm_provider_dropdown,
+                        outputs=llm_model_dropdown
+                    )
+                    
+                    llm_status = gr.Textbox(
+                        value="✓ Connected" if self.llm_analyzer.is_available() else "✗ Not available",
+                        label="Status",
+                        interactive=False
+                    )
+                    llm_model_info = gr.Textbox(
+                        value=self.llm_analyzer.get_model_info(),
+                        label="Current Model",
+                        interactive=False
+                    )
+                    
+                    llm_hint = gr.Markdown(value="")
+                    
+                    def apply_llm_settings(provider, model):
+                        """Apply LLM provider and model changes and save to config"""
+                        status, model_info = self.update_llm_provider(provider, model)
+                        # Save to config
+                        self.config.set_llm_config(provider, model)
+                        # Update the monitoring tab display
+                        updated_display = (
+                            f"**🤖 LLM:** {self.llm_analyzer.provider.upper()} - {self.llm_analyzer.get_model_info()}\n"
+                            f"**Status:** {'✓ Connected' if self.llm_analyzer.is_available() else '✗ Not available'}\n\n"
+                            f"💡 *Configure LLM settings in the Settings tab*"
+                        )
+                        return status, model_info, updated_display
+                    
+                    def update_hint(provider, status):
+                        """Update hint as string for Markdown component"""
+                        if "✓" in status or "Connected" in status:
+                            return ""
+                        if provider == "llamacpp":
+                            return "💡 *Local model not found. Download a model first: `python scripts/download_model.py`*"
+                        elif provider == "ollama":
+                            return "💡 *Ollama not detected. Start Ollama (`ollama serve`) or use local model.*"
+                        elif provider in ["openai", "anthropic"]:
+                            return f"💡 *Set {provider.upper()}_API_KEY environment variable.*"
+                        else:
+                            return "💡 *Check your configuration.*"
+                    
+                    apply_llm_btn = gr.Button("💾 Save LLM Settings", variant="primary")
+                    apply_llm_btn.click(
+                        fn=apply_llm_settings,
+                        inputs=[llm_provider_dropdown, llm_model_dropdown],
+                        outputs=[llm_status, llm_model_info, llm_status_display]
+                    )
+                    apply_llm_btn.click(
+                        fn=update_hint,
+                        inputs=[llm_provider_dropdown, llm_status],
+                        outputs=llm_hint
+                    )
+                    
+                    # Show initial hint if not available
+                    if not self.llm_analyzer.is_available():
+                        initial_hint = ""
+                        if self.llm_analyzer.provider == "llamacpp":
+                            initial_hint = "💡 *Local model not found. Download a model first: `python scripts/download_model.py`*"
+                        elif self.llm_analyzer.provider == "ollama":
+                            initial_hint = "💡 *Ollama not detected. Start Ollama (`ollama serve`) or use local model.*"
+                        elif self.llm_analyzer.provider in ["openai", "anthropic"]:
+                            initial_hint = f"💡 *Set {self.llm_analyzer.provider.upper()}_API_KEY environment variable.*"
+                        if initial_hint:
+                            gr.Markdown(initial_hint)
+                    
+                    # Monitoring preferences
+                    gr.Markdown("## 📊 Monitoring Preferences")
+                    with gr.Row():
+                        default_duration = gr.Slider(
+                            minimum=10,
+                            maximum=3600,
+                            value=self.config.get("monitoring.default_duration", 60),
+                            step=10,
+                            label="Default Duration (seconds)"
+                        )
+                        default_interval = gr.Slider(
+                            minimum=0.5,
+                            maximum=10,
+                            value=self.config.get("monitoring.default_interval", 1.0),
+                            step=0.5,
+                            label="Default Interval (seconds)"
+                        )
+                    
+                    auto_archive = gr.Checkbox(
+                        value=self.config.get("archive.enabled", True),
+                        label="Enable Automatic Archiving"
+                    )
+                    
+                    def save_monitoring_prefs(duration, interval, archive):
+                        """Save monitoring preferences"""
+                        self.config.set("monitoring.default_duration", int(duration))
+                        self.config.set("monitoring.default_interval", float(interval))
+                        self.config.set("archive.enabled", archive)
+                        self.config.save_config()
+                        return "✓ Preferences saved!"
+                    
+                    save_prefs_btn = gr.Button("💾 Save Preferences", variant="primary")
+                    prefs_status = gr.Markdown()
+                    save_prefs_btn.click(
+                        fn=save_monitoring_prefs,
+                        inputs=[default_duration, default_interval, auto_archive],
+                        outputs=prefs_status
+                    )
+                    
+                    # First-time setup completion
+                    if self.config.is_first_run():
+                        gr.Markdown("---")
+                        gr.Markdown("### 🎉 Setup Complete!")
+                        gr.Markdown("Configure your preferences above, then click 'Save Preferences' to continue.")
+                        
+                        def complete_setup():
+                            """Mark setup as complete"""
+                            self.config.mark_setup_complete()
+                            return "✓ Setup complete! You can now use the Monitoring tab."
+                        
+                        complete_btn = gr.Button("✅ Complete Setup", variant="primary")
+                        setup_status = gr.Markdown()
+                        complete_btn.click(
+                            fn=complete_setup,
+                            inputs=None,
+                            outputs=setup_status
+                        )
+                
                 with gr.TabItem("📊 Monitoring"):
                     with gr.Row():
                         with gr.Column(scale=1):
@@ -894,8 +1146,20 @@ class TelemetryGUI:
                             latest_metrics = gr.HTML(value="No data yet")
                             
                             with gr.Row():
-                                duration = gr.Slider(minimum=10, maximum=3600, value=60, step=10, label="Duration (seconds)")
-                                interval = gr.Slider(minimum=0.5, maximum=10, value=1.0, step=0.5, label="Interval (seconds)")
+                                duration = gr.Slider(
+                                    minimum=10,
+                                    maximum=3600,
+                                    value=self.config.get("monitoring.default_duration", 60),
+                                    step=10,
+                                    label="Duration (seconds)"
+                                )
+                                interval = gr.Slider(
+                                    minimum=0.5,
+                                    maximum=10,
+                                    value=self.config.get("monitoring.default_interval", 1.0),
+                                    step=0.5,
+                                    label="Interval (seconds)"
+                                )
                             
                             with gr.Row():
                                 start_btn = gr.Button("▶️ Start Monitoring", variant="primary")
@@ -927,108 +1191,10 @@ class TelemetryGUI:
                                 analyze_llm_btn = gr.Button("🤖 AI + LLM", variant="primary")
                             analysis_output = gr.Markdown()
                             
-                            # LLM Provider and Model Selection
-                            gr.Markdown("### 🤖 LLM Configuration")
-                            with gr.Row():
-                                llm_provider_dropdown = gr.Dropdown(
-                                    choices=["ollama", "llamacpp", "openai", "anthropic"],
-                                    value=self.llm_analyzer.provider,
-                                    label="Provider",
-                                    interactive=True
-                                )
-                                llm_model_dropdown = gr.Dropdown(
-                                    choices=self.get_available_models(self.llm_analyzer.provider),
-                                    value=self.llm_analyzer.model,
-                                    label="Model",
-                                    interactive=True,
-                                    allow_custom_value=True
-                                )
-                            
-                            def update_model_choices(provider):
-                                """Update model dropdown when provider changes"""
-                                models = self.get_available_models(provider)
-                                default_model = models[0] if models else ""
-                                # Return dict for Gradio component update
-                                return {
-                                    "choices": models,
-                                    "value": default_model
-                                }
-                            
-                            llm_provider_dropdown.change(
-                                fn=update_model_choices,
-                                inputs=llm_provider_dropdown,
-                                outputs=llm_model_dropdown
-                            )
-                            
-                            # Define status and info displays first
-                            llm_status = gr.Textbox(
-                                value="✓ Connected" if self.llm_analyzer.is_available() else "✗ Not available",
-                                label="Status",
-                                interactive=False
-                            )
-                            llm_model_info = gr.Textbox(
-                                value=self.llm_analyzer.get_model_info(),
-                                label="Current Model",
-                                interactive=False
-                            )
-                            
-                            # Dynamic hint based on provider and status
-                            llm_hint = gr.Markdown(value="")
-                            
-                            def apply_llm_settings(provider, model):
-                                """Apply LLM provider and model changes"""
-                                status, model_info = self.update_llm_provider(provider, model)
-                                return status, model_info
-                            
-                            apply_llm_btn = gr.Button("🔄 Apply LLM Settings", variant="secondary")
-                            
-                            def update_hint(provider, status):
-                                """Update hint as string for Markdown component"""
-                                if "✓" in status or "Connected" in status:
-                                    return ""
-                                if provider == "llamacpp":
-                                    return "💡 *Local model not found. Download a model first: `python scripts/download_model.py`*"
-                                elif provider == "ollama":
-                                    return "💡 *Ollama not detected. Start Ollama (`ollama serve`) or use local model.*"
-                                elif provider in ["openai", "anthropic"]:
-                                    return f"💡 *Set {provider.upper()}_API_KEY environment variable.*"
-                                else:
-                                    return "💡 *Check your configuration.*"
-                            
-                            # Attach event handlers
-                            apply_llm_btn.click(
-                                fn=apply_llm_settings,
-                                inputs=[llm_provider_dropdown, llm_model_dropdown],
-                                outputs=[llm_status, llm_model_info]
-                            )
-                            
-                            # Update hint when settings are applied
-                            apply_llm_btn.click(
-                                fn=update_hint,
-                                inputs=[llm_provider_dropdown, llm_status],
-                                outputs=llm_hint
-                            )
-                            
-                            # Initial hint display
-                            if not self.llm_analyzer.is_available():
-                                initial_hint = ""
-                                if self.llm_analyzer.provider == "llamacpp":
-                                    initial_hint = "💡 *Local model not found. Download a model first: `python scripts/download_model.py`*"
-                                elif self.llm_analyzer.provider == "ollama":
-                                    initial_hint = "💡 *Ollama not detected. Start Ollama (`ollama serve`) or use local model.*"
-                                elif self.llm_analyzer.provider in ["openai", "anthropic"]:
-                                    initial_hint = f"💡 *Set {self.llm_analyzer.provider.upper()}_API_KEY environment variable.*"
-                                if initial_hint:
-                                    gr.Markdown(initial_hint)
-                            
-                            # Show current status
-                            if not self.llm_analyzer.is_available():
-                                if self.llm_analyzer.provider == "llamacpp":
-                                    gr.Markdown("💡 *Local model not found. Download a model first: `python scripts/download_model.py`*")
-                                elif self.llm_analyzer.provider == "ollama":
-                                    gr.Markdown("💡 *Ollama not detected. Start Ollama (`ollama serve`) or use local model.*")
-                                elif self.llm_analyzer.provider in ["openai", "anthropic"]:
-                                    gr.Markdown(f"💡 *Set {self.llm_analyzer.provider.upper()}_API_KEY environment variable.*")
+                            # Show current LLM status (read-only, full config in Settings)
+                            # Note: llm_status_display is defined at the top level and updated from Settings tab
+                            # Display it here in the Monitoring tab
+                            llm_status_display
                 
                 # Archive tab (if archiving is enabled)
                 if self.archive:

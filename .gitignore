@@ -34,3 +34,6 @@ models/*.safetensors
 models/*.pt
 models/*.pth
 !models/.gitkeep
+
+# Configuration
+config.json
