@@ -37,6 +37,11 @@ class TelemetryGUI:
         self.is_monitoring = False
         self.monitor_thread = None
         self.system_info = None
+        self.monitoring_status = "Ready"
+        self.monitoring_start_time = None
+        self.monitoring_duration = None
+        self.is_live_monitoring = False
+        self.monitoring_completed = False
         # Load archive settings from config
         archive_enabled = enable_archiving if enable_archiving is not None else self.config.get("archive.enabled", True)
         self.archive = DataArchive(
@@ -677,31 +682,84 @@ class TelemetryGUI:
         history.append({"role": "assistant", "content": response})
         return "", history
     
-    def start_monitoring(self, duration: int, interval: float):
+    def start_monitoring(self, duration: int, interval: float, live: bool = False):
         """Start telemetry monitoring"""
         if self.is_monitoring:
             return "Monitoring already in progress!", gr.update()
         
         self.is_monitoring = True
+        self.is_live_monitoring = live
         self.telemetry_history = []
+        self.monitoring_start_time = time.time()
+        self.monitoring_duration = None if live else duration
+        self.monitoring_completed = False
         
         def monitor():
-            end_time = time.time() + duration
-            while time.time() < end_time and self.is_monitoring:
-                data = self.collector.collect_all_telemetry()
-                self.telemetry_history.append(data)
-                time.sleep(interval)
+            if live:
+                # Live monitoring - runs until stopped
+                self.monitoring_status = "🟢 Live monitoring active..."
+                while self.is_monitoring:
+                    data = self.collector.collect_all_telemetry()
+                    self.telemetry_history.append(data)
+                    elapsed = time.time() - self.monitoring_start_time
+                    self.monitoring_status = f"🟢 Live monitoring... ({len(self.telemetry_history)} data points, {elapsed:.0f}s elapsed)"
+                    time.sleep(interval)
+            else:
+                # Timed monitoring
+                end_time = time.time() + duration
+                while time.time() < end_time and self.is_monitoring:
+                    data = self.collector.collect_all_telemetry()
+                    self.telemetry_history.append(data)
+                    elapsed = time.time() - self.monitoring_start_time
+                    remaining = max(0, end_time - time.time())
+                    self.monitoring_status = f"🟢 Monitoring... ({len(self.telemetry_history)} points, {remaining:.0f}s remaining)"
+                    time.sleep(interval)
+            
+            # Monitoring ended
+            if self.is_monitoring:  # Only update if it ended naturally (not stopped manually)
+                points = len(self.telemetry_history)
+                elapsed = time.time() - self.monitoring_start_time
+                self.monitoring_status = f"✅ Monitoring completed! Collected {points} data points over {elapsed:.0f} seconds."
+                self.monitoring_completed = True
             self.is_monitoring = False
+            self.is_live_monitoring = False
         
         self.monitor_thread = threading.Thread(target=monitor, daemon=True)
         self.monitor_thread.start()
         
-        return f"Monitoring started for {duration} seconds!", gr.update()
+        if live:
+            status_msg = "🟢 Live monitoring started! Click Stop to end."
+        else:
+            status_msg = f"🟢 Monitoring started for {duration} seconds!"
+        
+        return status_msg, gr.update()
     
     def stop_monitoring(self):
         """Stop telemetry monitoring"""
+        was_monitoring = self.is_monitoring
         self.is_monitoring = False
-        return "Monitoring stopped.", gr.update()
+        self.is_live_monitoring = False
+        self.monitoring_completed = False
+        
+        if was_monitoring:
+            points = len(self.telemetry_history)
+            elapsed = time.time() - self.monitoring_start_time if self.monitoring_start_time else 0
+            status_msg = f"⏹️ Monitoring stopped. Collected {points} data points over {elapsed:.0f} seconds."
+            self.monitoring_status = status_msg
+            return status_msg, gr.update()
+        else:
+            return "No monitoring in progress.", gr.update()
+    
+    def get_monitoring_status(self):
+        """Get current monitoring status"""
+        if self.is_monitoring:
+            return self.monitoring_status
+        elif self.monitoring_completed or self.monitoring_status.startswith("✅"):
+            return self.monitoring_status  # Keep completion message
+        elif self.monitoring_status.startswith("⏹️"):
+            return self.monitoring_status  # Keep stop message
+        else:
+            return "Ready - Click 'Start Monitoring' to begin"
     
     def get_latest_metrics(self):
         """Get latest telemetry metrics for display"""
@@ -1161,12 +1219,28 @@ class TelemetryGUI:
                                     label="Interval (seconds)"
                                 )
                             
+                            live_monitoring = gr.Checkbox(
+                                value=False,
+                                label="🔴 Live Monitoring (continuous until stopped)",
+                                info="Enable for continuous monitoring without time limit"
+                            )
+                            
                             with gr.Row():
                                 start_btn = gr.Button("▶️ Start Monitoring", variant="primary")
                                 stop_btn = gr.Button("⏹️ Stop Monitoring")
                                 refresh_btn = gr.Button("🔄 Refresh", variant="secondary")
                             
-                            status = gr.Textbox(label="Status", interactive=False)
+                            status = gr.Textbox(
+                                label="Status",
+                                interactive=False,
+                                value="Ready - Click 'Start Monitoring' to begin"
+                            )
+                            
+                            # Helpful tip about checking completion
+                            gr.Markdown(
+                                "💡 **Tip:** Click '🔄 Refresh' to check if monitoring has completed.",
+                                visible=True
+                            )
                         
                         with gr.Column(scale=2):
                             plot = gr.Plot(label="Telemetry Plot")
@@ -1243,30 +1317,93 @@ class TelemetryGUI:
             
             # Auto-update on page load
             def load_initial_data():
-                return self.update_plot(), self.get_latest_metrics()
+                status_text = self.get_monitoring_status()
+                plot_fig = self.update_plot()
+                metrics_html = self.get_latest_metrics()
+                return status_text, plot_fig, metrics_html
             
+            # Initial load
             app.load(
                 fn=load_initial_data,
                 inputs=None,
-                outputs=[plot, latest_metrics]
+                outputs=[status, plot, latest_metrics]
             )
+            
+            def start_monitoring_wrapper(duration, interval, live):
+                """Start monitoring wrapper"""
+                status_msg, _ = self.start_monitoring(duration, interval, live)
+                plot_fig = self.update_plot()
+                metrics_html = self.get_latest_metrics()
+                # Update status immediately
+                self.monitoring_status = status_msg
+                self.monitoring_completed = False  # Reset completion flag
+                return status_msg, plot_fig, metrics_html
+            
+            def stop_monitoring_wrapper():
+                """Stop monitoring wrapper"""
+                status_msg, _ = self.stop_monitoring()
+                plot_fig = self.update_plot()
+                metrics_html = self.get_latest_metrics()
+                return status_msg, plot_fig, metrics_html
+            
+            def update_during_monitoring():
+                """Update status and display during active monitoring"""
+                if self.is_monitoring:
+                    status_text = self.get_monitoring_status()
+                    plot_fig = self.update_plot()
+                    metrics_html = self.get_latest_metrics()
+                    return status_text, plot_fig, metrics_html
+                else:
+                    # Return current state without updating
+                    return gr.update(), gr.update(), gr.update()
             
             # Button actions
             start_btn.click(
-                fn=self.start_monitoring,
-                inputs=[duration, interval],
-                outputs=[status, plot]
+                fn=start_monitoring_wrapper,
+                inputs=[duration, interval, live_monitoring],
+                outputs=[status, plot, latest_metrics]
             )
+            def refresh_with_status():
+                """Refresh that also updates status"""
+                status_text = self.get_monitoring_status()
+                plot_fig = self.update_plot()
+                metrics_html = self.get_latest_metrics()
+                return status_text, plot_fig, metrics_html
+            
             refresh_btn.click(
-                fn=load_initial_data,
+                fn=refresh_with_status,
                 inputs=None,
-                outputs=[plot, latest_metrics]
+                outputs=[status, plot, latest_metrics]
             )
             stop_btn.click(
-                fn=self.stop_monitoring,
+                fn=stop_monitoring_wrapper,
                 inputs=None,
-                outputs=[status]
+                outputs=[status, plot, latest_metrics]
             )
+            
+            # Auto-refresh during monitoring (updates every 2 seconds)
+            def auto_refresh():
+                """Auto-refresh - always checks and updates status"""
+                # Always get current status to catch completion
+                status_text = self.get_monitoring_status()
+                plot_fig = self.update_plot()
+                metrics_html = self.get_latest_metrics()
+                return status_text, plot_fig, metrics_html
+            
+            # Use app.load with every parameter for periodic updates
+            # Note: This feature may not be available in all Gradio versions
+            # If it doesn't work, the Refresh button will update the status
+            try:
+                app.load(
+                    fn=auto_refresh,
+                    inputs=None,
+                    outputs=[status, plot, latest_metrics],
+                    every=2.0  # Update every 2 seconds
+                )
+            except (TypeError, AttributeError, ValueError) as e:
+                # Auto-refresh not supported - user will need to click Refresh
+                # This is expected in some Gradio versions
+                pass
             analyze_btn.click(
                 fn=self.analyze_data,
                 inputs=None,
