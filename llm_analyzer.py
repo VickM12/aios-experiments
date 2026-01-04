@@ -184,7 +184,8 @@ class LLMAnalyzer:
         return f"{self.provider}: {self.model}"
     
     def explain_anomalies(self, telemetry_data: List[Dict[str, Any]], 
-                         analysis: Dict[str, Any]) -> str:
+                         analysis: Dict[str, Any],
+                         system_info: Dict[str, Any] = None) -> str:
         """Get LLM explanation of detected anomalies"""
         if not self.is_available():
             return "LLM not available. Set OPENAI_API_KEY or ANTHROPIC_API_KEY environment variable."
@@ -193,22 +194,15 @@ class LLMAnalyzer:
         if not anomaly_data.get('anomalies_detected', 0):
             return "No anomalies detected. System appears to be operating normally."
         
-        # Prepare context
-        latest = telemetry_data[-1] if telemetry_data else {}
-        cpu = latest.get('cpu', {}).get('cpu_percent', 0)
-        mem = latest.get('memory', {}).get('virtual_memory', {}).get('percent', 0)
+        # Build comprehensive context
+        context = self._build_comprehensive_context(telemetry_data, analysis, system_info)
         
-        # Get anomaly details
-        anomaly_details = anomaly_data.get('details', [])[:5]  # Top 5
+        context_str = json.dumps(context, indent=1, default=str)
         
         prompt = f"""You are analyzing system telemetry data. The system has detected {anomaly_data.get('anomalies_detected', 0)} anomalies out of {len(telemetry_data)} data points.
 
-Current system state:
-- CPU usage: {cpu:.1f}%
-- Memory usage: {mem:.1f}%
-
-Anomaly details:
-{json.dumps(anomaly_details, indent=2)}
+Telemetry Data:
+{context_str}
 
 Please provide:
 1. A clear explanation of what these anomalies likely represent
@@ -228,7 +222,7 @@ Keep the response concise and actionable."""
                         prompt=f"You are a system monitoring expert analyzing telemetry data.\n\n{prompt}",
                         options={
                             "temperature": 0.7,
-                            "num_predict": 500
+                            "num_predict": 1000
                         }
                     )
                     result = response.get('response', 'Error: No response from model')
@@ -249,10 +243,10 @@ Keep the response concise and actionable."""
                         "stream": False,
                         "options": {
                             "temperature": 0.7,
-                            "num_predict": 500
+                            "num_predict": 1000
                         }
                     },
-                    timeout=60
+                    timeout=120
                 )
                 if response.status_code == 200:
                     result = response.json().get('response', 'Error: No response from model')
@@ -268,13 +262,13 @@ Keep the response concise and actionable."""
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.7,
-                    max_tokens=500
+                    max_tokens=1000
                 )
                 return response.choices[0].message.content
             elif self.provider == "anthropic":
                 response = self.client.messages.create(
                     model=self.model,
-                    max_tokens=500,
+                    max_tokens=1000,
                     messages=[
                         {"role": "user", "content": prompt}
                     ]
@@ -284,39 +278,30 @@ Keep the response concise and actionable."""
             return f"Error getting LLM explanation: {str(e)}"
     
     def analyze_performance(self, telemetry_data: List[Dict[str, Any]], 
-                           analysis: Dict[str, Any]) -> str:
+                           analysis: Dict[str, Any],
+                           system_info: Dict[str, Any] = None) -> str:
         """Get LLM analysis of overall system performance"""
         if not self.is_available():
             return "LLM not available. Set OPENAI_API_KEY or ANTHROPIC_API_KEY environment variable."
         
-        insights = analysis.get('performance_insights', {})
-        trends = analysis.get('trend_analysis', {})
+        # Build comprehensive context
+        context = self._build_comprehensive_context(telemetry_data, analysis, system_info)
         
-        latest = telemetry_data[-1] if telemetry_data else {}
-        cpu = latest.get('cpu', {}).get('cpu_percent', 0)
-        mem = latest.get('memory', {}).get('virtual_memory', {}).get('percent', 0)
-        disk = latest.get('disk', {}).get('disk_usage', {}).get('percent', 0)
-        
-        prompt = f"""Analyze this system's performance based on telemetry data:
+        prompt = f"""Analyze this system's performance based on comprehensive telemetry data:
 
-Current metrics:
-- CPU: {cpu:.1f}%
-- Memory: {mem:.1f}%
-- Disk: {disk:.1f}%
-
-Performance status:
-{json.dumps(insights.get('current_status', {}), indent=2)}
-
-Trends:
-{json.dumps(trends.get('summary', {}), indent=2)}
+Complete System Context:
+{json.dumps(context, indent=2, default=str)}
 
 Provide:
 1. Overall system health assessment
-2. Any concerning patterns
+2. Any concerning patterns or trends
 3. Specific recommendations for optimization
 4. Expected vs actual performance
+5. Resource utilization analysis (CPU, memory, disk, network, processes)
+6. Temperature and power considerations
+7. System-specific insights based on hardware configuration
 
-Keep response concise and technical but understandable."""
+Keep response concise and technical but understandable, referencing specific data points and trends."""
 
         try:
             if self.provider == "ollama":
@@ -328,7 +313,7 @@ Keep response concise and technical but understandable."""
                         prompt=f"You are a system performance analyst.\n\n{prompt}",
                         options={
                             "temperature": 0.7,
-                            "num_predict": 500
+                            "num_predict": 1000
                         }
                     )
                     result = response.get('response', 'Error: No response from model')
@@ -345,10 +330,10 @@ Keep response concise and technical but understandable."""
                         "stream": False,
                         "options": {
                             "temperature": 0.7,
-                            "num_predict": 500
+                            "num_predict": 1000
                         }
                     },
-                    timeout=60
+                    timeout=120
                 )
                 if response.status_code == 200:
                     result = response.json().get('response', 'Error: No response from model')
@@ -364,13 +349,13 @@ Keep response concise and technical but understandable."""
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.7,
-                    max_tokens=500
+                    max_tokens=1000
                 )
                 return response.choices[0].message.content
             elif self.provider == "anthropic":
                 response = self.client.messages.create(
                     model=self.model,
-                    max_tokens=500,
+                    max_tokens=1000,
                     messages=[
                         {"role": "user", "content": prompt}
                     ]
@@ -379,32 +364,204 @@ Keep response concise and technical but understandable."""
         except Exception as e:
             return f"Error getting LLM analysis: {str(e)}"
     
+    def _build_comprehensive_context(self, telemetry_data: List[Dict[str, Any]], 
+                                    analysis: Dict[str, Any] = None,
+                                    system_info: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Build comprehensive but concise context from all available telemetry data"""
+        context = {
+            "session_info": {
+                "data_points": len(telemetry_data),
+                "time_range": {
+                    "start": telemetry_data[0].get('timestamp') if telemetry_data else None,
+                    "end": telemetry_data[-1].get('timestamp') if telemetry_data else None
+                }
+            }
+        }
+        
+        # Latest telemetry snapshot (key metrics only)
+        if telemetry_data:
+            latest = telemetry_data[-1]
+            cpu = latest.get('cpu', {})
+            mem = latest.get('memory', {}).get('virtual_memory', {})
+            disk = latest.get('disk', {}).get('disk_usage', {})
+            network_io = latest.get('network', {}).get('network_io', {})
+            processes = latest.get('processes', {})
+            
+            context["latest_telemetry"] = {
+                "timestamp": latest.get('timestamp'),
+                "cpu_percent": cpu.get('cpu_percent', 0),
+                "cpu_freq_mhz": cpu.get('cpu_freq', {}).get('current', 0),
+                "memory_percent": mem.get('percent', 0),
+                "memory_used_gb": round(mem.get('used', 0) / (1024**3), 2),
+                "disk_percent": disk.get('percent', 0),
+                "network_sent_mb": round(network_io.get('bytes_sent', 0) / (1024**2), 1) if network_io else 0,
+                "network_recv_mb": round(network_io.get('bytes_recv', 0) / (1024**2), 1) if network_io else 0,
+                "network_connections": latest.get('network', {}).get('network_connections', 0),
+                "total_processes": processes.get('total_processes', 0),
+                "top_processes": processes.get('top_processes', [])[:5]  # Only top 5
+            }
+            
+            # Temperature summary
+            temp_data = latest.get('temperature', {})
+            if temp_data and 'error' not in temp_data:
+                all_temps = []
+                for sensor_name, entries in temp_data.items():
+                    for entry in entries:
+                        if 'current' in entry and entry['current']:
+                            all_temps.append(entry['current'])
+                if all_temps:
+                    context["latest_telemetry"]["avg_temperature_c"] = round(sum(all_temps) / len(all_temps), 1)
+            
+            # Battery summary
+            battery = latest.get('battery', {})
+            if battery and 'error' not in battery:
+                context["latest_telemetry"]["battery_percent"] = battery.get('percent')
+                context["latest_telemetry"]["battery_plugged"] = battery.get('power_plugged', False)
+            
+            # Power summary
+            power = latest.get('power', {})
+            if power:
+                power_info = {}
+                
+                # GPU power
+                if power.get('gpu'):
+                    gpu_powers = [g.get('power_draw_watts') for g in power['gpu'] if g.get('power_draw_watts')]
+                    if gpu_powers:
+                        power_info["gpu_watts"] = round(sum(gpu_powers) / len(gpu_powers), 1)
+                
+                # CPU RAPL power
+                if power.get('rapl'):
+                    for domain, pwr in power['rapl'].items():
+                        if 'package' in domain.lower():
+                            energy = pwr.get('energy_joules', 0)
+                            if energy:
+                                power_info["cpu_energy_joules"] = round(energy, 1)
+                
+                # Power supplies
+                if power.get('power_supplies'):
+                    supplies = []
+                    for name, supply in power['power_supplies'].items():
+                        if supply.get('online'):
+                            supplies.append({
+                                "name": name,
+                                "type": supply.get('type', 'Unknown'),
+                                "status": supply.get('status', 'Unknown')
+                            })
+                    if supplies:
+                        power_info["power_supplies"] = supplies
+                
+                if power_info:
+                    context["latest_telemetry"]["power"] = power_info
+        
+        # Telemetry summary (statistics across all data points)
+        if len(telemetry_data) > 1:
+            cpu_values = [d.get('cpu', {}).get('cpu_percent', 0) for d in telemetry_data]
+            mem_values = [d.get('memory', {}).get('virtual_memory', {}).get('percent', 0) for d in telemetry_data]
+            disk_values = [d.get('disk', {}).get('disk_usage', {}).get('percent', 0) for d in telemetry_data]
+            
+            # Power statistics
+            gpu_power_values = []
+            cpu_energy_values = []
+            for d in telemetry_data:
+                power_data = d.get('power', {})
+                if power_data.get('gpu'):
+                    for gpu in power_data['gpu']:
+                        if gpu.get('power_draw_watts'):
+                            gpu_power_values.append(gpu['power_draw_watts'])
+                if power_data.get('rapl'):
+                    for domain, pwr in power_data['rapl'].items():
+                        if 'package' in domain.lower():
+                            energy = pwr.get('energy_joules', 0)
+                            if energy:
+                                cpu_energy_values.append(energy)
+            
+            context["telemetry_summary"] = {
+                "cpu": {
+                    "min": round(min(cpu_values), 1) if cpu_values else 0,
+                    "max": round(max(cpu_values), 1) if cpu_values else 0,
+                    "avg": round(sum(cpu_values) / len(cpu_values), 1) if cpu_values else 0
+                },
+                "memory": {
+                    "min": round(min(mem_values), 1) if mem_values else 0,
+                    "max": round(max(mem_values), 1) if mem_values else 0,
+                    "avg": round(sum(mem_values) / len(mem_values), 1) if mem_values else 0
+                },
+                "disk": {
+                    "min": round(min(disk_values), 1) if disk_values else 0,
+                    "max": round(max(disk_values), 1) if disk_values else 0,
+                    "avg": round(sum(disk_values) / len(disk_values), 1) if disk_values else 0
+                }
+            }
+            
+            # Add power summary if available
+            if gpu_power_values:
+                context["telemetry_summary"]["gpu_power_watts"] = {
+                    "min": round(min(gpu_power_values), 1),
+                    "max": round(max(gpu_power_values), 1),
+                    "avg": round(sum(gpu_power_values) / len(gpu_power_values), 1)
+                }
+            
+            if cpu_energy_values:
+                context["telemetry_summary"]["cpu_energy_joules"] = {
+                    "min": round(min(cpu_energy_values), 1),
+                    "max": round(max(cpu_energy_values), 1),
+                    "avg": round(sum(cpu_energy_values) / len(cpu_energy_values), 1)
+                }
+        
+        # Analysis results (summarized, not full details)
+        if analysis:
+            anomaly = analysis.get('anomaly_detection', {})
+            trends = analysis.get('trend_analysis', {}).get('trends', {})
+            insights = analysis.get('performance_insights', {})
+            
+            context["analysis"] = {
+                "anomalies_detected": anomaly.get('anomalies_detected', 0),
+                "anomaly_percentage": round(anomaly.get('anomaly_percentage', 0), 1),
+                "top_anomaly_factors": [f.get('metric') for f in anomaly.get('details', [{}])[0].get('top_factors', [])[:3]] if anomaly.get('details') else [],
+                "key_trends": {
+                    k: {"trend": v.get('trend'), "rate": round(v.get('rate_of_change_percent', 0), 1)} 
+                    for k, v in list(trends.items())[:5]  # Only top 5 trends
+                },
+                "performance_status": insights.get('current_status', {}),
+                "warnings": insights.get('warnings', [])[:3],  # Only top 3 warnings
+                "recommendations": insights.get('recommendations', [])[:3]  # Only top 3 recommendations
+            }
+        
+        # System information (key details only)
+        if system_info:
+            context["system_info"] = {
+                "os": system_info.get('os', {}).get('system', 'Unknown'),
+                "os_release": system_info.get('os', {}).get('release', 'Unknown'),
+                "cpu_model": system_info.get('cpu', {}).get('model', 'Unknown'),
+                "cpu_cores": f"{system_info.get('cpu', {}).get('physical_cores', '?')} physical, {system_info.get('cpu', {}).get('logical_cores', '?')} logical",
+                "memory_gb": round(system_info.get('memory', {}).get('total_gb', 0), 1),
+                "gpu": [g.get('model', 'Unknown') for g in system_info.get('gpu', [])[:1]],  # Only first GPU
+                "hostname": system_info.get('system', {}).get('hostname', 'Unknown')
+            }
+        
+        return context
+    
     def answer_question(self, question: str, telemetry_data: List[Dict[str, Any]], 
-                       analysis: Dict[str, Any] = None) -> str:
+                       analysis: Dict[str, Any] = None,
+                       system_info: Dict[str, Any] = None) -> str:
         """Answer a question about the telemetry data"""
         if not self.is_available():
             return "LLM not available. Set OPENAI_API_KEY or ANTHROPIC_API_KEY environment variable."
         
-        # Prepare context
-        latest = telemetry_data[-1] if telemetry_data else {}
-        context = {
-            "current_cpu": latest.get('cpu', {}).get('cpu_percent', 0),
-            "current_memory": latest.get('memory', {}).get('virtual_memory', {}).get('percent', 0),
-            "data_points": len(telemetry_data),
-        }
+        # Build comprehensive context with ALL available data
+        context = self._build_comprehensive_context(telemetry_data, analysis, system_info)
         
-        if analysis:
-            context["anomalies"] = analysis.get('anomaly_detection', {}).get('anomalies_detected', 0)
-            context["insights"] = analysis.get('performance_insights', {}).get('current_status', {})
+        # Create a more concise prompt to avoid token limits
+        context_str = json.dumps(context, indent=1, default=str)
         
-        prompt = f"""Answer this question about system telemetry data:
+        prompt = f"""You are a system performance analyst. Answer the user's question using the telemetry data below.
 
 Question: {question}
 
-Context:
-{json.dumps(context, indent=2)}
+Telemetry Data:
+{context_str}
 
-Provide a clear, helpful answer based on the telemetry data."""
+Provide a clear, accurate answer based on the data. Reference specific values when relevant."""
 
         try:
             if self.provider == "ollama":
@@ -416,10 +573,10 @@ Provide a clear, helpful answer based on the telemetry data."""
                         "stream": False,
                         "options": {
                             "temperature": 0.7,
-                            "num_predict": 300
+                            "num_predict": 1000
                         }
                     },
-                    timeout=60
+                    timeout=120
                 )
                 if response.status_code == 200:
                     result = response.json().get('response', 'Error: No response from model')
@@ -435,13 +592,13 @@ Provide a clear, helpful answer based on the telemetry data."""
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.7,
-                    max_tokens=300
+                    max_tokens=1000
                 )
                 return response.choices[0].message.content
             elif self.provider == "anthropic":
                 response = self.client.messages.create(
                     model=self.model,
-                    max_tokens=300,
+                    max_tokens=1000,
                     messages=[
                         {"role": "user", "content": prompt}
                     ]

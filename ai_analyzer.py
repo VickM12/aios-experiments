@@ -314,6 +314,90 @@ class TelemetryAnalyzer:
                     insights['warnings'].append('System temperature is high (>80°C)')
                     insights['recommendations'].append('Check cooling system and ensure proper ventilation')
         
+        # Network Analysis
+        network_io = latest.get('network', {}).get('network_io', {})
+        if network_io:
+            sent_mb = network_io.get('bytes_sent', 0) / (1024**2)
+            recv_mb = network_io.get('bytes_recv', 0) / (1024**2)
+            connections = latest.get('network', {}).get('network_connections', 0)
+            
+            insights['current_status']['network'] = {
+                'bytes_sent_mb': float(sent_mb),
+                'bytes_recv_mb': float(recv_mb),
+                'connections': int(connections),
+                'status': 'active' if connections > 0 else 'idle'
+            }
+            
+            # Check for network errors
+            if network_io.get('errin', 0) > 100 or network_io.get('errout', 0) > 100:
+                insights['warnings'].append(f'Network errors detected: {network_io.get("errin", 0)} in, {network_io.get("errout", 0)} out')
+        
+        # Power Analysis
+        power_data = latest.get('power', {})
+        if power_data:
+            power_info = {}
+            
+            # GPU power
+            if power_data.get('gpu'):
+                gpu_powers = [gpu.get('power_draw_watts') for gpu in power_data['gpu'] if gpu.get('power_draw_watts')]
+                if gpu_powers:
+                    power_info['gpu_watts'] = float(np.mean(gpu_powers))
+            
+            # CPU RAPL power
+            if power_data.get('rapl'):
+                for domain, pwr in power_data['rapl'].items():
+                    if 'package' in domain.lower():
+                        power_info['cpu_energy_joules'] = float(pwr.get('energy_joules', 0))
+            
+            if power_info:
+                insights['current_status']['power'] = power_info
+        
+        # Battery Analysis
+        battery_data = latest.get('battery', {})
+        if battery_data and 'error' not in battery_data:
+            battery_percent = battery_data.get('percent', None)
+            if battery_percent is not None:
+                insights['current_status']['battery'] = {
+                    'percent': float(battery_percent),
+                    'power_plugged': battery_data.get('power_plugged', False),
+                    'status': 'charging' if battery_data.get('power_plugged') else 'discharging'
+                }
+                
+                if battery_percent < 20:
+                    insights['warnings'].append('Battery level is critically low (<20%)')
+                    insights['recommendations'].append('Consider plugging in the device or reducing power consumption')
+                elif battery_percent < 10:
+                    insights['warnings'].append('Battery level is extremely low (<10%)')
+                    insights['recommendations'].append('Immediately plug in the device to prevent data loss')
+        
+        # Process Analysis
+        process_data = latest.get('processes', {})
+        if process_data:
+            total_processes = process_data.get('total_processes', 0)
+            top_processes = process_data.get('top_processes', [])
+            
+            # Find processes using significant resources
+            high_cpu_processes = [p for p in top_processes if (p.get('cpu_percent', 0) or 0) > 10]
+            high_mem_processes = [p for p in top_processes if (p.get('memory_percent', 0) or 0) > 5]
+            
+            insights['current_status']['processes'] = {
+                'total': int(total_processes),
+                'high_cpu_count': len(high_cpu_processes),
+                'high_memory_count': len(high_mem_processes),
+                'top_processes': top_processes[:5]  # Top 5 for reference
+            }
+            
+            if high_cpu_processes:
+                top_cpu_proc = high_cpu_processes[0]
+                insights['warnings'].append(f"High CPU usage detected: {top_cpu_proc.get('name', 'unknown')} using {top_cpu_proc.get('cpu_percent', 0):.1f}%")
+                insights['recommendations'].append(f"Consider investigating {top_cpu_proc.get('name', 'unknown')} (PID {top_cpu_proc.get('pid', 'N/A')}) if CPU usage is consistently high")
+            
+            if high_mem_processes:
+                top_mem_proc = high_mem_processes[0]
+                if (top_mem_proc.get('memory_percent', 0) or 0) > 10:
+                    insights['warnings'].append(f"High memory usage detected: {top_mem_proc.get('name', 'unknown')} using {top_mem_proc.get('memory_percent', 0):.2f}%")
+                    insights['recommendations'].append(f"Consider investigating {top_mem_proc.get('name', 'unknown')} (PID {top_mem_proc.get('pid', 'N/A')}) if memory usage is concerning")
+        
         # Statistical Analysis
         if len(telemetry_data) > 1:
             insights['statistics'] = {

@@ -25,3 +25,4 @@ anomaly_analysis_*.png
 *.json
 
 .DS_Store
+telemetry_archive/

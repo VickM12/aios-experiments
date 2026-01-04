@@ -60,6 +60,15 @@ python app.py --predict --duration 120
 
 # Predict 20 steps ahead with visualization
 python app.py --predict --prediction-steps 20 --visualize
+
+# Enable desktop notifications and system logging
+python app.py --notifications --system-logging
+
+# Export data to different formats
+python app.py --export-csv telemetry.csv --export-json telemetry.json
+
+# Generate systemd service file for background monitoring
+python app.py --generate-systemd
 ```
 
 ### Command Line Options
@@ -178,12 +187,83 @@ You can ask the AI chat:
 - "Give me recommendations"
 - "Show me system status"
 
+## OS Integration
+
+The app supports safe OS-level integrations:
+
+### Desktop Notifications
+Enable desktop notifications for alerts and anomalies:
+```bash
+python app.py --notifications
+```
+
+### System Logging
+Log events to system logs (syslog/journald on Linux):
+```bash
+python app.py --system-logging
+```
+
+### Data Export
+Export telemetry data to various formats:
+```bash
+# CSV format
+python app.py --export-csv data.csv
+
+# JSON format
+python app.py --export-json data.json
+
+# Prometheus format
+python app.py --export-prometheus metrics.prom
+```
+
+### Background Service (Linux)
+Generate a systemd service file for background monitoring:
+```bash
+python app.py --generate-systemd
+sudo cp aios-telemetry.service /etc/systemd/system/
+sudo systemctl enable aios-telemetry
+sudo systemctl start aios-telemetry
+```
+
+### Historical Data Archiving
+Enable automatic archiving with system log correlation:
+```bash
+# Enable archiving (30 day retention by default)
+python app.py --archive
+
+# Custom retention period
+python app.py --archive --retention-days 60 --archive-dir my_archive
+
+# Query archived sessions
+python app.py --list-sessions
+python app.py --query-archive session_20240103_120000
+
+# View archive statistics
+python app.py --archive-stats
+```
+
+The archiving system:
+- **Automatic compression**: Sessions older than 7 days are compressed
+- **Retention policy**: Old sessions are automatically deleted after retention period
+- **System log correlation**: Automatically correlates telemetry anomalies with system logs
+- **Query interface**: Search and retrieve historical sessions
+- **Database indexing**: Fast queries by time range, anomaly count, etc.
+
+### System Log Integration
+The app can read and correlate with system logs:
+- **Linux**: journald (systemd) and syslog
+- **Windows**: Event Log
+- **macOS**: Unified logging system
+
+Logs are automatically correlated with telemetry anomalies within a 5-minute window, helping identify what system events occurred during anomalies.
+
 ## Notes
 
 - Some sensors (temperature, fans) may not be available on all systems
 - Requires appropriate permissions to access system metrics
 - The anomaly detector needs at least 10 data points to function effectively
 - GUI requires Gradio (automatically installed with requirements)
+- OS notifications require `notify-send` on Linux, `osascript` on macOS, or `win10toast` on Windows
 
 ## License
 

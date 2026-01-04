@@ -12,6 +12,8 @@ from telemetry_collector import TelemetryCollector
 from ai_analyzer import TelemetryAnalyzer
 from visualizer import TelemetryVisualizer
 from llm_analyzer import LLMAnalyzer
+from data_archive import DataArchive
+from system_logs import SystemLogReader
 import plotly.graph_objects as go
 import pandas as pd
 
@@ -19,7 +21,7 @@ import pandas as pd
 class TelemetryGUI:
     """GUI application with chat interface"""
     
-    def __init__(self):
+    def __init__(self, enable_archiving: bool = True):
         self.collector = TelemetryCollector()
         self.analyzer = TelemetryAnalyzer()
         self.visualizer = TelemetryVisualizer()
@@ -28,6 +30,9 @@ class TelemetryGUI:
         self.is_monitoring = False
         self.monitor_thread = None
         self.system_info = None
+        self.archive = DataArchive() if enable_archiving else None
+        self.log_reader = SystemLogReader() if enable_archiving else None
+        self.last_archived_session = None
         
     def get_system_info_display(self):
         """Get formatted system information"""
@@ -119,6 +124,100 @@ class TelemetryGUI:
             else:
                 response = "No telemetry data available. Please start monitoring first."
         
+        elif "network" in message_lower or "internet" in message_lower or "bandwidth" in message_lower:
+            if current_data:
+                network_io = current_data.get('network', {}).get('network_io', {})
+                if network_io:
+                    sent_mb = network_io.get('bytes_sent', 0) / (1024**2)
+                    recv_mb = network_io.get('bytes_recv', 0) / (1024**2)
+                    sent_gb = sent_mb / 1024
+                    recv_gb = recv_mb / 1024
+                    packets_sent = network_io.get('packets_sent', 0)
+                    packets_recv = network_io.get('packets_recv', 0)
+                    connections = current_data.get('network', {}).get('network_connections', 0)
+                    
+                    response = f"**Network Status:**\n"
+                    response += f"- Data sent: {sent_gb:.2f} GB ({sent_mb:.1f} MB)\n"
+                    response += f"- Data received: {recv_gb:.2f} GB ({recv_mb:.1f} MB)\n"
+                    response += f"- Packets sent: {packets_sent:,}\n"
+                    response += f"- Packets received: {packets_recv:,}\n"
+                    response += f"- Active connections: {connections}\n"
+                    if network_io.get('errin', 0) > 0 or network_io.get('errout', 0) > 0:
+                        response += f"- ⚠️ Errors: {network_io.get('errin', 0)} in, {network_io.get('errout', 0)} out\n"
+                else:
+                    response = "Network data not available."
+            else:
+                response = "No telemetry data available. Please start monitoring first."
+        
+        elif "power" in message_lower or "watt" in message_lower or "energy" in message_lower:
+            if current_data:
+                power_data = current_data.get('power', {})
+                if power_data:
+                    response = f"**Power Usage:**\n"
+                    
+                    # GPU power
+                    if power_data.get('gpu'):
+                        for i, gpu in enumerate(power_data['gpu']):
+                            if 'power_draw_watts' in gpu and gpu['power_draw_watts']:
+                                response += f"- GPU {i+1}: {gpu['power_draw_watts']:.1f}W\n"
+                    
+                    # CPU RAPL power
+                    if power_data.get('rapl'):
+                        for domain, pwr in power_data['rapl'].items():
+                            if 'package' in domain.lower():
+                                energy = pwr.get('energy_joules', 0)
+                                response += f"- CPU Package: {energy:.1f}J\n"
+                    
+                    if not power_data.get('gpu') and not power_data.get('rapl'):
+                        response += "Power monitoring not available on this system.\n"
+                else:
+                    response = "Power data not available."
+            else:
+                response = "No telemetry data available. Please start monitoring first."
+        
+        elif "battery" in message_lower:
+            if current_data:
+                battery_data = current_data.get('battery', {})
+                if battery_data and 'error' not in battery_data:
+                    percent = battery_data.get('percent', 'N/A')
+                    plugged = battery_data.get('power_plugged', False)
+                    status = "Charging" if plugged else "Discharging"
+                    secsleft = battery_data.get('secsleft', None)
+                    
+                    response = f"**Battery Status:**\n"
+                    response += f"- Charge: {percent}%\n"
+                    response += f"- Status: {status}\n"
+                    if secsleft and secsleft != -1:
+                        hours = secsleft // 3600
+                        minutes = (secsleft % 3600) // 60
+                        response += f"- Time remaining: {hours}h {minutes}m\n"
+                else:
+                    response = "Battery data not available (system may not have a battery)."
+            else:
+                response = "No telemetry data available. Please start monitoring first."
+        
+        elif "process" in message_lower or "processes" in message_lower or "top process" in message_lower or "what's using" in message_lower:
+            if current_data:
+                process_data = current_data.get('processes', {})
+                if process_data:
+                    total = process_data.get('total_processes', 0)
+                    top_processes = process_data.get('top_processes', [])[:10]
+                    
+                    response = f"**Process Information:**\n"
+                    response += f"- Total processes: {total}\n\n"
+                    response += f"**Top CPU-consuming processes:**\n"
+                    for i, proc in enumerate(top_processes, 1):
+                        proc_name = proc.get('name', 'unknown')
+                        proc_cpu = proc.get('cpu_percent', 0) or 0
+                        proc_mem = proc.get('memory_percent', 0) or 0
+                        proc_pid = proc.get('pid', 'N/A')
+                        if proc_cpu > 0 or proc_mem > 0.1:
+                            response += f"{i}. {proc_name} (PID {proc_pid}): CPU {proc_cpu:.1f}%, Memory {proc_mem:.2f}%\n"
+                else:
+                    response = "Process data not available."
+            else:
+                response = "No telemetry data available. Please start monitoring first."
+        
         elif "anomaly" in message_lower or "problem" in message_lower or "issue" in message_lower or "anomalies" in message_lower:
             if len(self.telemetry_history) >= 10:
                 try:
@@ -131,7 +230,7 @@ class TelemetryGUI:
                         if wants_details and self.llm_analyzer.is_available():
                             # Use LLM for detailed explanation
                             try:
-                                llm_response = self.llm_analyzer.explain_anomalies(self.telemetry_history, analysis)
+                                llm_response = self.llm_analyzer.explain_anomalies(self.telemetry_history, analysis, self.system_info)
                                 if llm_response and str(llm_response).strip():
                                     response = str(llm_response).strip()
                                 else:
@@ -220,11 +319,12 @@ class TelemetryGUI:
                     if len(self.telemetry_history) >= 10:
                         analysis = self.analyzer.comprehensive_analysis(self.telemetry_history)
                     
-                    # Use LLM to answer the question
+                    # Use LLM to answer the question with full context
                     response = self.llm_analyzer.answer_question(
                         message,
                         self.telemetry_history,
-                        analysis
+                        analysis,
+                        self.system_info
                     )
                 except Exception as e:
                     response = f"I encountered an error: {str(e)}\n\n"
@@ -385,6 +485,35 @@ class TelemetryGUI:
         
         analysis = self.analyzer.comprehensive_analysis(self.telemetry_history)
         
+        # Archive if enabled
+        system_logs = []
+        if self.archive:
+            try:
+                # Get system logs for correlation
+                if self.log_reader and self.telemetry_history:
+                    from datetime import timedelta
+                    start_time = datetime.fromisoformat(self.telemetry_history[0].get('timestamp', datetime.now().isoformat()))
+                    system_logs = self.log_reader.read_system_logs(
+                        since=start_time - timedelta(minutes=5),
+                        until=start_time + timedelta(minutes=2),
+                        limit=200
+                    )
+                
+                # Archive session
+                session_id = self.archive.archive_session(
+                    self.telemetry_history,
+                    analysis,
+                    self.system_info
+                )
+                
+                # Correlate with system logs
+                if session_id and system_logs:
+                    self.archive.correlate_with_logs(session_id, system_logs)
+                    self.last_archived_session = session_id
+            except Exception as e:
+                # Silently fail archiving if there's an error
+                pass
+        
         # Format analysis results
         result = "## AI Analysis Results\n\n"
         
@@ -394,15 +523,59 @@ class TelemetryGUI:
             result += "### 📊 Performance Status\n"
             for metric, data in insights['current_status'].items():
                 status_icon = "🔴" if data.get('status') == 'high' else "🟡" if data.get('status') == 'moderate' else "🟢"
-                value = data.get('usage', data.get('average', 'N/A'))
-                if isinstance(value, (int, float)):
-                    # Temperature should be displayed in Celsius, not as percentage
-                    if metric == 'temperature':
+                
+                # Handle different metric types
+                if metric == 'temperature':
+                    value = data.get('average', 'N/A')
+                    if isinstance(value, (int, float)):
                         result += f"{status_icon} **{metric.upper()}**: {value:.2f}°C ({data.get('status', 'unknown')})\n"
                     else:
-                        result += f"{status_icon} **{metric.upper()}**: {value:.2f}% ({data.get('status', 'unknown')})\n"
+                        result += f"{status_icon} **{metric.upper()}**: {value} ({data.get('status', 'unknown')})\n"
+                elif metric == 'network':
+                    sent_mb = data.get('bytes_sent_mb', 0)
+                    recv_mb = data.get('bytes_recv_mb', 0)
+                    connections = data.get('connections', 0)
+                    result += f"{status_icon} **{metric.upper()}**: {sent_mb:.1f} MB sent, {recv_mb:.1f} MB recv ({connections} connections)\n"
+                elif metric == 'power':
+                    power_str = []
+                    if 'gpu_watts' in data:
+                        power_str.append(f"GPU: {data['gpu_watts']:.1f}W")
+                    if 'cpu_energy_joules' in data:
+                        power_str.append(f"CPU: {data['cpu_energy_joules']:.1f}J")
+                    if power_str:
+                        result += f"{status_icon} **{metric.upper()}**: {', '.join(power_str)}\n"
+                    else:
+                        result += f"{status_icon} **{metric.upper()}**: Not available\n"
+                elif metric == 'battery':
+                    percent = data.get('percent', 'N/A')
+                    status = data.get('status', 'unknown')
+                    plugged = data.get('power_plugged', False)
+                    result += f"{status_icon} **{metric.upper()}**: {percent}% ({status}, {'Plugged in' if plugged else 'Unplugged'})\n"
+                elif metric == 'processes':
+                    total = data.get('total', 0)
+                    high_cpu = data.get('high_cpu_count', 0)
+                    high_mem = data.get('high_memory_count', 0)
+                    result += f"{status_icon} **{metric.upper()}**: {total} total"
+                    if high_cpu > 0 or high_mem > 0:
+                        result += f" ({high_cpu} high CPU, {high_mem} high memory)"
+                    result += "\n"
+                    # Show top processes
+                    top_processes = data.get('top_processes', [])[:5]
+                    if top_processes:
+                        result += "  Top processes:\n"
+                        for proc in top_processes:
+                            proc_name = proc.get('name', 'unknown')
+                            proc_cpu = proc.get('cpu_percent', 0) or 0
+                            proc_mem = proc.get('memory_percent', 0) or 0
+                            if proc_cpu > 0 or proc_mem > 0.1:
+                                result += f"    • {proc_name}: CPU {proc_cpu:.1f}%, Mem {proc_mem:.2f}%\n"
                 else:
-                    result += f"{status_icon} **{metric.upper()}**: {value} ({data.get('status', 'unknown')})\n"
+                    # Default: CPU, Memory, Disk (percentages)
+                    value = data.get('usage', data.get('average', 'N/A'))
+                    if isinstance(value, (int, float)):
+                        result += f"{status_icon} **{metric.upper()}**: {value:.2f}% ({data.get('status', 'unknown')})\n"
+                    else:
+                        result += f"{status_icon} **{metric.upper()}**: {value} ({data.get('status', 'unknown')})\n"
         
         # Anomaly Detection
         anomaly = analysis.get('anomaly_detection', {})
@@ -416,6 +589,95 @@ class TelemetryGUI:
             for rec in insights['recommendations']:
                 result += f"- {rec}\n"
         
+        # Archive info
+        if self.archive and self.last_archived_session:
+            result += f"\n### 💾 Archive\n"
+            result += f"- Session archived: `{self.last_archived_session}`\n"
+            if system_logs:
+                correlated = len(self.archive.get_correlated_events(self.last_archived_session))
+                result += f"- Correlated with {correlated} system log events\n"
+        
+        return result
+    
+    def list_archived_sessions(self):
+        """List all archived sessions"""
+        if not self.archive:
+            return "Archiving is not enabled."
+        
+        sessions = self.archive.query_sessions()
+        if not sessions:
+            return "No archived sessions found."
+        
+        result = "## 📚 Archived Sessions\n\n"
+        result += f"Total: {len(sessions)} sessions\n\n"
+        
+        for session in sessions[:20]:  # Show last 20
+            result += f"### {session['session_id']}\n"
+            result += f"- **Start:** {session['start_time']}\n"
+            result += f"- **End:** {session['end_time']}\n"
+            result += f"- **Data Points:** {session['data_points']}\n"
+            result += f"- **Anomalies:** {session['anomaly_count']}\n\n"
+        
+        if len(sessions) > 20:
+            result += f"\n*Showing 20 of {len(sessions)} sessions*\n"
+        
+        return result
+    
+    def query_archived_session(self, session_id: str):
+        """Query a specific archived session"""
+        if not self.archive:
+            return "Archiving is not enabled."
+        
+        if not session_id or not session_id.strip():
+            return "Please enter a session ID."
+        
+        session = self.archive.load_session(session_id.strip())
+        if not session:
+            return f"Session '{session_id}' not found."
+        
+        result = f"## 📦 Session: {session_id}\n\n"
+        result += f"**Start Time:** {session.get('start_time')}\n"
+        result += f"**End Time:** {session.get('end_time')}\n"
+        result += f"**Data Points:** {len(session.get('telemetry_data', []))}\n\n"
+        
+        # Show analysis summary if available
+        analysis = session.get('analysis', {})
+        if analysis:
+            anomaly = analysis.get('anomaly_detection', {})
+            if anomaly.get('anomalies_detected', 0) > 0:
+                result += f"### 🔍 Anomalies\n"
+                result += f"- Detected: {anomaly['anomalies_detected']} ({anomaly.get('anomaly_percentage', 0):.1f}%)\n\n"
+        
+        # Show correlated log events
+        events = self.archive.get_correlated_events(session_id.strip())
+        if events:
+            result += f"### 🔗 Correlated System Log Events ({len(events)})\n\n"
+            for event in events[:10]:  # Show top 10
+                result += f"**[{event['log_time']}]** {event['source']} - {event['level']}\n"
+                result += f"- {event['message'][:100]}{'...' if len(event['message']) > 100 else ''}\n"
+                result += f"- Correlation: {event['correlation_score']:.2f}\n\n"
+        else:
+            result += "### 🔗 Correlated Log Events\n"
+            result += "No correlated log events found.\n"
+        
+        return result
+    
+    def get_archive_stats(self):
+        """Get archive statistics"""
+        if not self.archive:
+            return "Archiving is not enabled."
+        
+        stats = self.archive.get_statistics()
+        result = "## 📊 Archive Statistics\n\n"
+        result += f"**Total Sessions:** {stats.get('total_sessions', 0)}\n"
+        result += f"**Total Data Points:** {stats.get('total_data_points', 0):,}\n"
+        result += f"**Total Anomalies:** {stats.get('total_anomalies', 0)}\n"
+        result += f"**Total Correlations:** {stats.get('total_correlations', 0)}\n\n"
+        
+        if stats.get('oldest_session'):
+            result += f"**Oldest Session:** {stats['oldest_session']}\n"
+            result += f"**Newest Session:** {stats['newest_session']}\n"
+        
         return result
     
     def create_interface(self):
@@ -424,48 +686,96 @@ class TelemetryGUI:
             gr.Markdown("# 🤖 AI Telemetry Monitoring & Analysis")
             gr.Markdown("Monitor your system in real-time and chat with AI about your telemetry data")
             
-            with gr.Row():
-                with gr.Column(scale=1):
-                    system_info = gr.HTML(value=self.get_system_info_display())
-                    latest_metrics = gr.HTML(value="No data yet")
+            # Create tabs for different sections
+            with gr.Tabs():
+                with gr.TabItem("📊 Monitoring"):
+                    with gr.Row():
+                        with gr.Column(scale=1):
+                            system_info = gr.HTML(value=self.get_system_info_display())
+                            latest_metrics = gr.HTML(value="No data yet")
+                            
+                            with gr.Row():
+                                duration = gr.Slider(minimum=10, maximum=3600, value=60, step=10, label="Duration (seconds)")
+                                interval = gr.Slider(minimum=0.5, maximum=10, value=1.0, step=0.5, label="Interval (seconds)")
+                            
+                            with gr.Row():
+                                start_btn = gr.Button("▶️ Start Monitoring", variant="primary")
+                                stop_btn = gr.Button("⏹️ Stop Monitoring")
+                                refresh_btn = gr.Button("🔄 Refresh", variant="secondary")
+                            
+                            status = gr.Textbox(label="Status", interactive=False)
+                        
+                        with gr.Column(scale=2):
+                            plot = gr.Plot(label="Telemetry Plot")
                     
                     with gr.Row():
-                        duration = gr.Slider(minimum=10, maximum=3600, value=60, step=10, label="Duration (seconds)")
-                        interval = gr.Slider(minimum=0.5, maximum=10, value=1.0, step=0.5, label="Interval (seconds)")
-                    
-                    with gr.Row():
-                        start_btn = gr.Button("▶️ Start Monitoring", variant="primary")
-                        stop_btn = gr.Button("⏹️ Stop Monitoring")
-                        refresh_btn = gr.Button("🔄 Refresh", variant="secondary")
-                    
-                    status = gr.Textbox(label="Status", interactive=False)
+                        with gr.Column(scale=1):
+                            gr.Markdown("## 💬 Chat with AI")
+                            chatbot = gr.Chatbot(label="Ask questions about your system")
+                            msg = gr.Textbox(
+                                label="Message",
+                                placeholder="Ask about CPU, memory, anomalies, recommendations...",
+                                lines=2
+                            )
+                            msg.submit(self.chat_with_ai, [msg, chatbot], [msg, chatbot])
+                            chat_btn = gr.Button("Send", variant="primary")
+                            chat_btn.click(self.chat_with_ai, [msg, chatbot], [msg, chatbot])
+                        
+                        with gr.Column(scale=1):
+                            gr.Markdown("## 📈 Analysis")
+                            with gr.Row():
+                                analyze_btn = gr.Button("🔍 Run AI Analysis", variant="secondary")
+                                analyze_llm_btn = gr.Button("🤖 AI + LLM", variant="primary")
+                            analysis_output = gr.Markdown()
+                            model_info = self.llm_analyzer.get_model_info()
+                            gr.Markdown(f"**🤖 LLM:** {model_info}")
+                            if not self.llm_analyzer.is_available():
+                                gr.Markdown("💡 *Ollama not detected. Start Ollama or set OPENAI_API_KEY/ANTHROPIC_API_KEY*")
                 
-                with gr.Column(scale=2):
-                    plot = gr.Plot(label="Telemetry Plot")
-            
-            with gr.Row():
-                with gr.Column(scale=1):
-                    gr.Markdown("## 💬 Chat with AI")
-                    chatbot = gr.Chatbot(label="Ask questions about your system")
-                    msg = gr.Textbox(
-                        label="Message",
-                        placeholder="Ask about CPU, memory, anomalies, recommendations...",
-                        lines=2
-                    )
-                    msg.submit(self.chat_with_ai, [msg, chatbot], [msg, chatbot])
-                    chat_btn = gr.Button("Send", variant="primary")
-                    chat_btn.click(self.chat_with_ai, [msg, chatbot], [msg, chatbot])
-                
-                with gr.Column(scale=1):
-                    gr.Markdown("## 📈 Analysis")
-                    with gr.Row():
-                        analyze_btn = gr.Button("🔍 Run AI Analysis", variant="secondary")
-                        analyze_llm_btn = gr.Button("🤖 AI + LLM", variant="primary")
-                    analysis_output = gr.Markdown()
-                    model_info = self.llm_analyzer.get_model_info()
-                    gr.Markdown(f"**🤖 LLM:** {model_info}")
-                    if not self.llm_analyzer.is_available():
-                        gr.Markdown("💡 *Ollama not detected. Start Ollama or set OPENAI_API_KEY/ANTHROPIC_API_KEY*")
+                # Archive tab (if archiving is enabled)
+                if self.archive:
+                    with gr.TabItem("📦 Archive"):
+                        gr.Markdown("## Historical Data Archive")
+                        gr.Markdown("View and query archived telemetry sessions with system log correlations")
+                        
+                        with gr.Row():
+                            with gr.Column(scale=1):
+                                gr.Markdown("### Archive Management")
+                                list_sessions_btn = gr.Button("📚 List All Sessions", variant="primary")
+                                archive_stats_btn = gr.Button("📊 Archive Statistics", variant="secondary")
+                                sessions_output = gr.Markdown()
+                            
+                            with gr.Column(scale=1):
+                                gr.Markdown("### Query Session")
+                                session_id_input = gr.Textbox(
+                                    label="Session ID",
+                                    placeholder="e.g., session_20260103_141413",
+                                    lines=1
+                                )
+                                query_session_btn = gr.Button("🔍 Query Session", variant="primary")
+                                session_output = gr.Markdown()
+                        
+                        # Archive button actions
+                        list_sessions_btn.click(
+                            fn=self.list_archived_sessions,
+                            inputs=None,
+                            outputs=sessions_output
+                        )
+                        archive_stats_btn.click(
+                            fn=self.get_archive_stats,
+                            inputs=None,
+                            outputs=sessions_output
+                        )
+                        query_session_btn.click(
+                            fn=self.query_archived_session,
+                            inputs=session_id_input,
+                            outputs=session_output
+                        )
+                        session_id_input.submit(
+                            fn=self.query_archived_session,
+                            inputs=session_id_input,
+                            outputs=session_output
+                        )
             
             # Auto-update on page load
             def load_initial_data():
@@ -494,6 +804,11 @@ class TelemetryGUI:
                 outputs=[status]
             )
             analyze_btn.click(
+                fn=self.analyze_data,
+                inputs=None,
+                outputs=analysis_output
+            )
+            analyze_llm_btn.click(
                 fn=self.analyze_data,
                 inputs=None,
                 outputs=analysis_output

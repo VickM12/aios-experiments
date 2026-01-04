@@ -4,21 +4,30 @@ AI-powered telemetry monitoring and analysis application
 """
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from telemetry_collector import TelemetryCollector
 from ai_analyzer import TelemetryAnalyzer
 from visualizer import TelemetryVisualizer
+from os_integration import OSIntegration
+from data_archive import DataArchive
+from system_logs import SystemLogReader
 import argparse
 
 
 class TelemetryApp:
     """Main application for telemetry collection and AI analysis"""
     
-    def __init__(self):
+    def __init__(self, enable_notifications: bool = False, enable_logging: bool = False,
+                 enable_archiving: bool = False, archive_dir: str = "telemetry_archive",
+                 retention_days: int = 30):
         self.collector = TelemetryCollector()
         self.analyzer = TelemetryAnalyzer()
         self.visualizer = TelemetryVisualizer()
         self.telemetry_history = []
+        self.os_integration = OSIntegration(enable_notifications=enable_notifications, 
+                                            enable_logging=enable_logging)
+        self.archive = DataArchive(archive_dir=archive_dir, retention_days=retention_days) if enable_archiving else None
+        self.log_reader = SystemLogReader() if enable_archiving else None
     
     def collect_sample(self, duration: int = 60, interval: float = 1.0, include_system_info: bool = True):
         """Collect telemetry samples"""
@@ -164,6 +173,43 @@ class TelemetryApp:
         # Display results
         self._display_analysis(analysis)
         
+        # Archive data if archiving is enabled
+        if self.archive:
+            # Get system logs for correlation
+            system_logs = []
+            if self.log_reader and self.telemetry_history:
+                try:
+                    start_time = datetime.fromisoformat(self.telemetry_history[0].get('timestamp', datetime.now().isoformat()))
+                    # Only read logs from a short window (5 minutes before to 2 minutes after)
+                    system_logs = self.log_reader.read_system_logs(
+                        since=start_time - timedelta(minutes=5),
+                        until=start_time + timedelta(minutes=2),
+                        limit=200  # Limit to 200 most recent relevant logs
+                    )
+                except Exception as e:
+                    # Silently fail if log reading has issues
+                    pass
+            
+            # Archive session
+            session_id = self.archive.archive_session(
+                self.telemetry_history,
+                analysis,
+                getattr(self, '_system_info', None)
+            )
+            
+            # Correlate with system logs
+            if session_id and system_logs:
+                self.archive.correlate_with_logs(session_id, system_logs)
+                correlated_count = len(self.archive.get_correlated_events(session_id))
+                print(f"\n💾 Archived session: {session_id}")
+                print(f"   📁 Location: {self.archive.archive_dir}/{session_id}.json")
+                if correlated_count > 0:
+                    print(f"   🔗 Correlated with {correlated_count} system log events")
+                print(f"\n💡 Next steps:")
+                print(f"   • View session: python app.py --query-archive {session_id}")
+                print(f"   • List all sessions: python app.py --list-sessions")
+                print(f"   • Archive stats: python app.py --archive-stats")
+        
         return analysis
     
     def _display_analysis(self, analysis: dict):
@@ -202,6 +248,22 @@ class TelemetryApp:
                 print("\n⚠️  WARNINGS:")
                 for warning in insights['warnings']:
                     print(f"   • {warning}")
+                    # Send OS notification for warnings
+                    self.os_integration.notify_warning("System Warning", warning)
+                    
+                    # Check for critical alerts
+                    if 'CPU usage is critically high' in warning:
+                        cpu_percent = status.get('cpu', {}).get('usage', 0)
+                        self.os_integration.notify_critical_alert("CPU", cpu_percent, 90)
+                    elif 'Memory usage is critically high' in warning:
+                        mem_percent = status.get('memory', {}).get('usage', 0)
+                        self.os_integration.notify_critical_alert("Memory", mem_percent, 90)
+                    elif 'Disk space is critically low' in warning:
+                        disk_percent = status.get('disk', {}).get('usage', 0)
+                        self.os_integration.notify_critical_alert("Disk", disk_percent, 90)
+                    elif 'System temperature is high' in warning:
+                        temp = status.get('temperature', {}).get('average', 0)
+                        self.os_integration.notify_critical_alert("Temperature", temp, 80, unit="°C")
             
             if insights.get('recommendations'):
                 print("\n💡 RECOMMENDATIONS:")
@@ -214,8 +276,15 @@ class TelemetryApp:
             print("\n🔍 ANOMALY DETECTION")
             print("-" * 60)
             if 'anomalies_detected' in anomaly:
-                print(f"Anomalies detected: {anomaly['anomalies_detected']} "
+                anomalies_count = anomaly['anomalies_detected']
+                print(f"Anomalies detected: {anomalies_count} "
                       f"({anomaly.get('anomaly_percentage', 0):.2f}%)")
+                # Send OS notification for anomalies
+                if anomalies_count > 0:
+                    self.os_integration.notify_anomaly(anomalies_count, {
+                        'percentage': anomaly.get('anomaly_percentage', 0),
+                        'details_count': len(anomaly.get('details', []))
+                    })
                 if anomaly.get('details'):
                     print("\nAnomaly Analysis:")
                     for detail in anomaly['details'][:10]:  # Show first 10
@@ -493,10 +562,98 @@ def main():
                        help='Enable anomaly prediction (requires at least 20 data points)')
     parser.add_argument('--prediction-steps', type=int, default=10, 
                        help='Number of steps ahead to predict (default: 10)')
+    parser.add_argument('--notifications', action='store_true',
+                       help='Enable desktop notifications for alerts and anomalies')
+    parser.add_argument('--system-logging', action='store_true',
+                       help='Enable logging to system logs (syslog/journald)')
+    parser.add_argument('--export-prometheus', type=str, metavar='FILE',
+                       help='Export telemetry data to Prometheus format')
+    parser.add_argument('--export-csv', type=str, metavar='FILE',
+                       help='Export telemetry data to CSV format')
+    parser.add_argument('--export-json', type=str, metavar='FILE',
+                       help='Export data to JSON format')
+    parser.add_argument('--generate-systemd', action='store_true',
+                       help='Generate systemd service file for background monitoring')
+    parser.add_argument('--archive', action='store_true',
+                       help='Enable data archiving with retention')
+    parser.add_argument('--archive-dir', type=str, default='telemetry_archive',
+                       help='Directory for archived data (default: telemetry_archive)')
+    parser.add_argument('--retention-days', type=int, default=30,
+                       help='Number of days to retain archived data (default: 30)')
+    parser.add_argument('--query-archive', type=str, metavar='SESSION_ID',
+                       help='Query and display archived session')
+    parser.add_argument('--list-sessions', action='store_true',
+                       help='List all archived sessions')
+    parser.add_argument('--archive-stats', action='store_true',
+                       help='Show archive statistics')
     
     args = parser.parse_args()
     
-    app = TelemetryApp()
+    # Handle archive queries before creating app
+    if args.query_archive or args.list_sessions or args.archive_stats:
+        archive = DataArchive(archive_dir=args.archive_dir, retention_days=args.retention_days)
+        
+        if args.query_archive:
+            session = archive.load_session(args.query_archive)
+            if session:
+                print(f"\n📦 Session: {args.query_archive}")
+                print(f"   Start: {session.get('start_time')}")
+                print(f"   End: {session.get('end_time')}")
+                print(f"   Data Points: {len(session.get('telemetry_data', []))}")
+                
+                # Show correlated events
+                events = archive.get_correlated_events(args.query_archive)
+                if events:
+                    print(f"\n🔗 Correlated System Log Events ({len(events)}):")
+                    for event in events[:10]:  # Show top 10
+                        print(f"   [{event['log_time']}] {event['source']} {event['level']}: {event['message'][:80]}")
+                        print(f"      Correlation: {event['correlation_score']:.2f}")
+            else:
+                print(f"Session {args.query_archive} not found")
+            return
+        
+        if args.list_sessions:
+            sessions = archive.query_sessions()
+            print(f"\n📚 Archived Sessions ({len(sessions)}):")
+            for session in sessions[:20]:  # Show last 20
+                print(f"   {session['session_id']}: {session['start_time']} - {session['data_points']} points, {session['anomaly_count']} anomalies")
+            return
+        
+        if args.archive_stats:
+            stats = archive.get_statistics()
+            print("\n📊 Archive Statistics:")
+            print(f"   Total Sessions: {stats.get('total_sessions', 0)}")
+            print(f"   Total Data Points: {stats.get('total_data_points', 0):,}")
+            print(f"   Total Anomalies: {stats.get('total_anomalies', 0)}")
+            print(f"   Total Correlations: {stats.get('total_correlations', 0)}")
+            if stats.get('oldest_session'):
+                print(f"   Oldest: {stats['oldest_session']}")
+                print(f"   Newest: {stats['newest_session']}")
+            return
+    
+    # Generate systemd service file if requested
+    if args.generate_systemd:
+        os_int = OSIntegration(enable_notifications=False, enable_logging=False)
+        service_content = os_int.create_systemd_service()
+        service_file = 'aios-telemetry.service'
+        with open(service_file, 'w') as f:
+            f.write(service_content)
+        print(f"Generated systemd service file: {service_file}")
+        print(f"To install: sudo cp {service_file} /etc/systemd/system/")
+        print(f"To enable: sudo systemctl enable {service_file.replace('.service', '')}")
+        print(f"To start: sudo systemctl start {service_file.replace('.service', '')}")
+        return
+    
+    app = TelemetryApp(enable_notifications=args.notifications, 
+                       enable_logging=args.system_logging,
+                       enable_archiving=args.archive,
+                       archive_dir=args.archive_dir,
+                       retention_days=args.retention_days)
+    
+    # Run maintenance tasks if archiving is enabled
+    if args.archive:
+        app.archive.compress_old_sessions()
+        app.archive.cleanup_old_sessions()
     
     if args.mode == 'collect' or args.mode == 'full':
         # Display system info at start
@@ -504,6 +661,14 @@ def main():
         app.collect_sample(args.duration, args.interval)
         if args.save_data:
             app.save_data()
+        
+        # Export data if requested
+        if args.export_prometheus:
+            app.os_integration.export_to_prometheus(app.telemetry_history, args.export_prometheus)
+        if args.export_csv:
+            app.os_integration.export_to_csv(app.telemetry_history, args.export_csv)
+        if args.export_json:
+            app.os_integration.export_to_json(app.telemetry_history, args.export_json)
     
     if args.mode == 'analyze' or args.mode == 'full':
         if not app.telemetry_history:
