@@ -821,8 +821,12 @@ class TelemetryGUI:
         
         return fig
     
-    def analyze_data(self):
-        """Run AI analysis on collected data"""
+    def analyze_data(self, use_llm: bool = False):
+        """Run AI analysis on collected data
+        
+        Args:
+            use_llm: If True, include LLM-powered insights and explanations
+        """
         if len(self.telemetry_history) < 10:
             return "Need at least 10 data points for analysis. Please collect more data."
         
@@ -859,6 +863,30 @@ class TelemetryGUI:
         
         # Format analysis results
         result = "## AI Analysis Results\n\n"
+        
+        # Add LLM insights if requested and available
+        if use_llm:
+            result += "### 🤖 LLM Analysis\n\n"
+            if self.llm_analyzer.is_available():
+                try:
+                    result += "*Generating LLM insights... This may take a moment.*\n\n"
+                    llm_insights = self.llm_analyzer.analyze_performance(
+                        self.telemetry_history,
+                        analysis,
+                        self.system_info
+                    )
+                    if llm_insights and str(llm_insights).strip():
+                        result += str(llm_insights).strip() + "\n\n"
+                    else:
+                        result += "⚠️ *LLM returned empty response. Showing standard analysis below.*\n\n"
+                except Exception as e:
+                    result += f"⚠️ *LLM analysis error: {str(e)}*\n"
+                    result += "*Showing standard analysis below.*\n\n"
+            else:
+                result += "⚠️ *LLM not available.*\n"
+                result += "*To enable LLM insights, configure an LLM provider in the Settings tab.*\n"
+                result += "*Showing standard analysis below.*\n\n"
+            result += "---\n\n"
         
         # Performance Insights
         insights = analysis.get('performance_insights', {})
@@ -1404,13 +1432,21 @@ class TelemetryGUI:
                 # Auto-refresh not supported - user will need to click Refresh
                 # This is expected in some Gradio versions
                 pass
+            def run_standard_analysis():
+                """Run standard AI analysis without LLM"""
+                return self.analyze_data(use_llm=False)
+            
+            def run_llm_analysis():
+                """Run AI analysis with LLM insights"""
+                return self.analyze_data(use_llm=True)
+            
             analyze_btn.click(
-                fn=self.analyze_data,
+                fn=run_standard_analysis,
                 inputs=None,
                 outputs=analysis_output
             )
             analyze_llm_btn.click(
-                fn=self.analyze_data,
+                fn=run_llm_analysis,
                 inputs=None,
                 outputs=analysis_output
             )
