@@ -26,3 +26,11 @@ anomaly_analysis_*.png
 
 .DS_Store
 telemetry_archive/
+
+# Models (large files)
+models/*.gguf
+models/*.bin
+models/*.safetensors
+models/*.pt
+models/*.pth
+!models/.gitkeep
