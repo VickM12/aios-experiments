@@ -8,7 +8,7 @@ import json
 import threading
 import time
 from datetime import datetime
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from .telemetry_collector import TelemetryCollector
 from .ai_analyzer import TelemetryAnalyzer
 from .visualizer import TelemetryVisualizer
@@ -37,6 +37,54 @@ class TelemetryGUI:
         self.archive = DataArchive() if enable_archiving else None
         self.log_reader = SystemLogReader() if enable_archiving else None
         self.last_archived_session = None
+    
+    def update_llm_provider(self, provider: str, model: str = None) -> Tuple[str, str]:
+        """Update the LLM provider and model"""
+        try:
+            # For llamacpp, convert colon to dash in model names (gemma3:1b -> gemma3-1b.gguf)
+            if provider == "llamacpp" and model:
+                # If model has colon, convert to dash and add .gguf if needed
+                if ":" in model:
+                    model = model.replace(":", "-")
+                # Add .gguf extension if not present
+                if not model.endswith(".gguf"):
+                    model = model + ".gguf"
+            
+            self.llm_analyzer = LLMAnalyzer(provider=provider, model=model)
+            status = "✓ Connected" if self.llm_analyzer.is_available() else "✗ Not available"
+            model_info = self.llm_analyzer.get_model_info()
+            return status, model_info
+        except Exception as e:
+            return f"✗ Error: {str(e)}", "N/A"
+    
+    def get_available_models(self, provider: str) -> List[str]:
+        """Get list of available models for a provider"""
+        if provider == "ollama":
+            try:
+                import requests
+                response = requests.get("http://localhost:11434/api/tags", timeout=2)
+                if response.status_code == 200:
+                    models = response.json().get('models', [])
+                    return [m.get('name', '') for m in models if m.get('name')]
+            except:
+                pass
+            return ["llama3.2", "llama2", "alpaca", "gemma3:1b"]
+        elif provider == "llamacpp":
+            # List models in models directory
+            from pathlib import Path
+            project_root = Path(__file__).parent.parent
+            models_dir = project_root / "models"
+            if models_dir.exists():
+                models = [f.name for f in models_dir.glob("*.gguf")]
+                if models:
+                    return models
+            # Return default even if no models found (user can type custom name)
+            return ["gemma3-1b.gguf"]
+        elif provider == "openai":
+            return ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"]
+        elif provider == "anthropic":
+            return ["claude-3-haiku-20240307", "claude-3-sonnet-20240229", "claude-3-opus-20240229"]
+        return []
         
     def get_system_info_display(self):
         """Get formatted system information"""
@@ -878,17 +926,109 @@ class TelemetryGUI:
                                 analyze_btn = gr.Button("🔍 Run AI Analysis", variant="secondary")
                                 analyze_llm_btn = gr.Button("🤖 AI + LLM", variant="primary")
                             analysis_output = gr.Markdown()
-                            model_info = self.llm_analyzer.get_model_info()
-                            provider_name = self.llm_analyzer.provider.upper()
-                            gr.Markdown(f"**🤖 LLM Provider:** {provider_name}")
-                            gr.Markdown(f"**Model:** {model_info}")
+                            
+                            # LLM Provider and Model Selection
+                            gr.Markdown("### 🤖 LLM Configuration")
+                            with gr.Row():
+                                llm_provider_dropdown = gr.Dropdown(
+                                    choices=["ollama", "llamacpp", "openai", "anthropic"],
+                                    value=self.llm_analyzer.provider,
+                                    label="Provider",
+                                    interactive=True
+                                )
+                                llm_model_dropdown = gr.Dropdown(
+                                    choices=self.get_available_models(self.llm_analyzer.provider),
+                                    value=self.llm_analyzer.model,
+                                    label="Model",
+                                    interactive=True,
+                                    allow_custom_value=True
+                                )
+                            
+                            def update_model_choices(provider):
+                                """Update model dropdown when provider changes"""
+                                models = self.get_available_models(provider)
+                                default_model = models[0] if models else ""
+                                # Return dict for Gradio component update
+                                return {
+                                    "choices": models,
+                                    "value": default_model
+                                }
+                            
+                            llm_provider_dropdown.change(
+                                fn=update_model_choices,
+                                inputs=llm_provider_dropdown,
+                                outputs=llm_model_dropdown
+                            )
+                            
+                            # Define status and info displays first
+                            llm_status = gr.Textbox(
+                                value="✓ Connected" if self.llm_analyzer.is_available() else "✗ Not available",
+                                label="Status",
+                                interactive=False
+                            )
+                            llm_model_info = gr.Textbox(
+                                value=self.llm_analyzer.get_model_info(),
+                                label="Current Model",
+                                interactive=False
+                            )
+                            
+                            # Dynamic hint based on provider and status
+                            llm_hint = gr.Markdown(value="")
+                            
+                            def apply_llm_settings(provider, model):
+                                """Apply LLM provider and model changes"""
+                                status, model_info = self.update_llm_provider(provider, model)
+                                return status, model_info
+                            
+                            apply_llm_btn = gr.Button("🔄 Apply LLM Settings", variant="secondary")
+                            
+                            def update_hint(provider, status):
+                                """Update hint as string for Markdown component"""
+                                if "✓" in status or "Connected" in status:
+                                    return ""
+                                if provider == "llamacpp":
+                                    return "💡 *Local model not found. Download a model first: `python scripts/download_model.py`*"
+                                elif provider == "ollama":
+                                    return "💡 *Ollama not detected. Start Ollama (`ollama serve`) or use local model.*"
+                                elif provider in ["openai", "anthropic"]:
+                                    return f"💡 *Set {provider.upper()}_API_KEY environment variable.*"
+                                else:
+                                    return "💡 *Check your configuration.*"
+                            
+                            # Attach event handlers
+                            apply_llm_btn.click(
+                                fn=apply_llm_settings,
+                                inputs=[llm_provider_dropdown, llm_model_dropdown],
+                                outputs=[llm_status, llm_model_info]
+                            )
+                            
+                            # Update hint when settings are applied
+                            apply_llm_btn.click(
+                                fn=update_hint,
+                                inputs=[llm_provider_dropdown, llm_status],
+                                outputs=llm_hint
+                            )
+                            
+                            # Initial hint display
+                            if not self.llm_analyzer.is_available():
+                                initial_hint = ""
+                                if self.llm_analyzer.provider == "llamacpp":
+                                    initial_hint = "💡 *Local model not found. Download a model first: `python scripts/download_model.py`*"
+                                elif self.llm_analyzer.provider == "ollama":
+                                    initial_hint = "💡 *Ollama not detected. Start Ollama (`ollama serve`) or use local model.*"
+                                elif self.llm_analyzer.provider in ["openai", "anthropic"]:
+                                    initial_hint = f"💡 *Set {self.llm_analyzer.provider.upper()}_API_KEY environment variable.*"
+                                if initial_hint:
+                                    gr.Markdown(initial_hint)
+                            
+                            # Show current status
                             if not self.llm_analyzer.is_available():
                                 if self.llm_analyzer.provider == "llamacpp":
                                     gr.Markdown("💡 *Local model not found. Download a model first: `python scripts/download_model.py`*")
                                 elif self.llm_analyzer.provider == "ollama":
-                                    gr.Markdown("💡 *Ollama not detected. Start Ollama (`ollama serve`) or use local model with `--llm-provider llamacpp`*")
-                                else:
-                                    gr.Markdown("💡 *LLM not available. Check API keys or model configuration.*")
+                                    gr.Markdown("💡 *Ollama not detected. Start Ollama (`ollama serve`) or use local model.*")
+                                elif self.llm_analyzer.provider in ["openai", "anthropic"]:
+                                    gr.Markdown(f"💡 *Set {self.llm_analyzer.provider.upper()}_API_KEY environment variable.*")
                 
                 # Archive tab (if archiving is enabled)
                 if self.archive:
