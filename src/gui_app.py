@@ -63,11 +63,11 @@ class TelemetryGUI:
                     model = model + ".gguf"
             
             self.llm_analyzer = LLMAnalyzer(provider=provider, model=model)
-            status = "✓ Connected" if self.llm_analyzer.is_available() else "✗ Not available"
+            status = "Connected" if self.llm_analyzer.is_available() else "Not available"
             model_info = self.llm_analyzer.get_model_info()
             return status, model_info
         except Exception as e:
-            return f"✗ Error: {str(e)}", "N/A"
+            return f"Error: {str(e)}", "N/A"
     
     def get_available_models(self, provider: str) -> List[str]:
         """Get list of available models for a provider"""
@@ -191,7 +191,7 @@ class TelemetryGUI:
             
             <div style='background: #f0f9ff; border-left: 4px solid #2563eb; padding: 12px 15px; margin: 20px 0; border-radius: 4px;'>
                 <div style='display: flex; align-items: center; gap: 10px; margin-bottom: 10px;'>
-                    <h2 style='margin: 0; font-size: 1.1em; color: #1e3a8a; font-weight: 600;'>🖥️ Detected System</h2>
+                    <h2 style='margin: 0; font-size: 1.1em; color: #1e3a8a; font-weight: 600;'><i class='fas fa-desktop' style='margin-right: 6px;'></i> Detected System</h2>
                     <span style='font-size: 1.1em; font-weight: bold; color: #1e40af; background: #dbeafe; padding: 2px 8px; border-radius: 3px;'>{system_type}</span>
                 </div>
                 <div style='font-size: 0.95em; color: #1f2937; line-height: 1.8; font-family: system-ui, -apple-system, sans-serif;'>
@@ -200,7 +200,7 @@ class TelemetryGUI:
             </div>
             
             <div style='margin: 30px 0;'>
-                <h2 style='font-size: 1.1em;'>📋 Quick Setup</h2>
+                <h2 style='font-size: 1.1em;'><i class='fas fa-clipboard-list' style='margin-right: 6px;'></i> Quick Setup</h2>
                 <p style='color: #6b7280;'>Configure your preferences below. You can change these settings anytime from the Settings tab.</p>
             </div>
         </div>
@@ -327,7 +327,7 @@ class TelemetryGUI:
                         response += f"- Status: {'High' if cpu_percent > 80 else 'Moderate' if cpu_percent > 50 else 'Normal'}\n"
                         if cpu.get('cpu_freq', {}).get('current'):
                             response += f"- Frequency: {cpu['cpu_freq']['current']:.0f} MHz\n"
-                        response += f"\n⚠️ Error getting LLM response: {str(e)}"
+                        response += f"\n**Error:** Error getting LLM response: {str(e)}"
                     else:
                         response = "No telemetry data available. Please start monitoring first."
             elif current_data:
@@ -339,9 +339,9 @@ class TelemetryGUI:
                 if cpu.get('cpu_freq', {}).get('current'):
                     response += f"- Frequency: {cpu['cpu_freq']['current']:.0f} MHz\n"
                 if wants_details and not self.llm_analyzer.is_available():
-                    response += f"\n💡 *For detailed explanations, make sure the LLM is available.*"
+                    response += f"\n*Note: For detailed explanations, make sure the LLM is available.*"
                 elif wants_details:
-                    response += f"\n💡 *Ask 'Tell me more about the CPU' or 'Explain the CPU in detail' for LLM analysis.*"
+                    response += f"\n*Tip: Ask 'Tell me more about the CPU' or 'Explain the CPU in detail' for LLM analysis.*"
             else:
                 response = "No telemetry data available. Please start monitoring first."
         
@@ -375,7 +375,7 @@ class TelemetryGUI:
                     response += f"- Packets received: {packets_recv:,}\n"
                     response += f"- Active connections: {connections}\n"
                     if network_io.get('errin', 0) > 0 or network_io.get('errout', 0) > 0:
-                        response += f"- ⚠️ Errors: {network_io.get('errin', 0)} in, {network_io.get('errout', 0)} out\n"
+                        response += f"- **Warning:** Errors: {network_io.get('errin', 0)} in, {network_io.get('errout', 0)} out\n"
                 else:
                     response = "Network data not available."
             else:
@@ -408,7 +408,44 @@ class TelemetryGUI:
                 response = "No telemetry data available. Please start monitoring first."
         
         elif "battery" in message_lower:
-            if current_data:
+            # Check if user wants detailed explanation or optimization advice
+            wants_details = any(word in message_lower for word in ['tell me', 'explain', 'more', 'detail', 'in detail', 'about', 'what', 'how', 'why', 'optimize', 'optimization', 'improve', 'better', 'performance', 'please'])
+            
+            if wants_details and self.llm_analyzer.is_available() and len(self.telemetry_history) > 0:
+                # Use LLM for detailed battery explanation/optimization
+                try:
+                    analysis = None
+                    if len(self.telemetry_history) >= 10:
+                        analysis = self.analyzer.comprehensive_analysis(self.telemetry_history)
+                    response = self.llm_analyzer.answer_question(
+                        message,
+                        self.telemetry_history,
+                        analysis,
+                        self.system_info
+                    )
+                except Exception as e:
+                    # Fall back to basic info
+                    if current_data:
+                        battery_data = current_data.get('battery', {})
+                        if battery_data and 'error' not in battery_data:
+                            percent = battery_data.get('percent', 'N/A')
+                            plugged = battery_data.get('power_plugged', False)
+                            status = "Charging" if plugged else "Discharging"
+                            secsleft = battery_data.get('secsleft', None)
+                            
+                            response = f"**Battery Status:**\n"
+                            response += f"- Charge: {percent}%\n"
+                            response += f"- Status: {status}\n"
+                            if secsleft and secsleft != -1:
+                                hours = secsleft // 3600
+                                minutes = (secsleft % 3600) // 60
+                                response += f"- Time remaining: {hours}h {minutes}m\n"
+                            response += f"\n**Error:** Error getting LLM response: {str(e)}"
+                        else:
+                            response = "Battery data not available (system may not have a battery)."
+                    else:
+                        response = "No telemetry data available. Please start monitoring first."
+            elif current_data:
                 battery_data = current_data.get('battery', {})
                 if battery_data and 'error' not in battery_data:
                     percent = battery_data.get('percent', 'N/A')
@@ -423,6 +460,10 @@ class TelemetryGUI:
                         hours = secsleft // 3600
                         minutes = (secsleft % 3600) // 60
                         response += f"- Time remaining: {hours}h {minutes}m\n"
+                    if wants_details and not self.llm_analyzer.is_available():
+                        response += f"\n*Note: For detailed explanations and optimization advice, make sure the LLM is available.*"
+                    elif wants_details:
+                        response += f"\n*Tip: Ask 'How can I optimize my battery performance?' or 'Explain battery optimization' for LLM analysis.*"
                 else:
                     response = "Battery data not available (system may not have a battery)."
             else:
@@ -461,7 +502,7 @@ class TelemetryGUI:
                                 proc_pid = proc.get('pid', 'N/A')
                                 if proc_cpu > 0 or proc_mem > 0.1:
                                     response += f"{i}. {proc_name} (PID {proc_pid}): CPU {proc_cpu:.1f}%, Memory {proc_mem:.2f}%\n"
-                            response += f"\n⚠️ Error getting LLM response: {str(e)}"
+                            response += f"\n**Error:** Error getting LLM response: {str(e)}"
                         else:
                             response = "Process data not available."
                     else:
@@ -483,9 +524,9 @@ class TelemetryGUI:
                         if proc_cpu > 0 or proc_mem > 0.1:
                             response += f"{i}. {proc_name} (PID {proc_pid}): CPU {proc_cpu:.1f}%, Memory {proc_mem:.2f}%\n"
                     if wants_details and not self.llm_analyzer.is_available():
-                        response += f"\n\n💡 *For detailed explanations, make sure the LLM is available.*"
+                        response += f"\n\n*Note: For detailed explanations, make sure the LLM is available.*"
                     elif wants_details:
-                        response += f"\n\n💡 *Ask 'Tell me more about the processes' or 'Explain the processes in detail' for LLM analysis.*"
+                        response += f"\n\n*Tip: Ask 'Tell me more about the processes' or 'Explain the processes in detail' for LLM analysis.*"
                 else:
                     response = "Process data not available."
             else:
@@ -512,13 +553,13 @@ class TelemetryGUI:
                                     response += f"- Found {anomaly['anomalies_detected']} anomalies ({anomaly.get('anomaly_percentage', 0):.1f}%)\n"
                                     if anomaly.get('details'):
                                         response += f"- Latest anomaly at index {anomaly['details'][-1]['index']}\n"
-                                    response += f"\n⚠️ LLM returned empty response. Showing basic info."
+                                    response += f"\n**Warning:** LLM returned empty response. Showing basic info."
                             except Exception as e:
                                 response = f"**Anomaly Detection:**\n"
                                 response += f"- Found {anomaly['anomalies_detected']} anomalies ({anomaly.get('anomaly_percentage', 0):.1f}%)\n"
                                 if anomaly.get('details'):
                                     response += f"- Latest anomaly at index {anomaly['details'][-1]['index']}\n"
-                                response += f"\n⚠️ Error getting LLM explanation: {str(e)}"
+                                response += f"\n**Error:** Error getting LLM explanation: {str(e)}"
                         else:
                             # Basic anomaly info
                             response = f"**Anomaly Detection:**\n"
@@ -526,9 +567,9 @@ class TelemetryGUI:
                             if anomaly.get('details'):
                                 response += f"- Latest anomaly at index {anomaly['details'][-1]['index']}\n"
                             if self.llm_analyzer.is_available():
-                                response += f"\n💡 *Ask 'Tell me more about the anomalies' or 'Explain the anomalies' for detailed LLM analysis.*"
+                                response += f"\n*Tip: Ask 'Tell me more about the anomalies' or 'Explain the anomalies' for detailed LLM analysis.*"
                             elif wants_details:
-                                response += f"\n💡 *LLM not available. For detailed explanations, make sure Ollama is running or set API keys.*"
+                                response += f"\n*Note: LLM not available. For detailed explanations, make sure Ollama is running or set API keys.*"
                     else:
                         response = "**No anomalies detected.** System appears to be operating normally."
                 except Exception as e:
@@ -639,7 +680,7 @@ class TelemetryGUI:
                         response += "- Anomaly detection\n"
                         response += "- System recommendations\n"
                         response += "- Overall system status\n\n"
-                        response += "💡 *For more detailed AI responses, make sure Ollama is running or set API keys.*\n\n"
+                        response += "*Note: For more detailed AI responses, make sure Ollama is running or set API keys.*\n\n"
                         response += "Try asking: 'What's my CPU usage?' or 'Are there any anomalies?'"
                 else:
                     response = "I can help you with:\n"
@@ -650,7 +691,7 @@ class TelemetryGUI:
                     response += "- System recommendations\n"
                     response += "- Overall system status\n\n"
                     if not self.llm_analyzer.is_available():
-                        response += "💡 *For more detailed AI responses, make sure Ollama is running or set API keys.*\n\n"
+                        response += "*Note: For more detailed AI responses, make sure Ollama is running or set API keys.*\n\n"
                     response += "Try asking: 'What's my CPU usage?' or 'Are there any anomalies?'"
         
         # Ensure response is always a string (never None)
@@ -697,12 +738,12 @@ class TelemetryGUI:
         def monitor():
             if live:
                 # Live monitoring - runs until stopped
-                self.monitoring_status = "🟢 Live monitoring active..."
+                self.monitoring_status = "<i class='fas fa-circle' style='color: #10b981; margin-right: 4px;'></i> Live monitoring active..."
                 while self.is_monitoring:
                     data = self.collector.collect_all_telemetry()
                     self.telemetry_history.append(data)
                     elapsed = time.time() - self.monitoring_start_time
-                    self.monitoring_status = f"🟢 Live monitoring... ({len(self.telemetry_history)} data points, {elapsed:.0f}s elapsed)"
+                    self.monitoring_status = f"<i class='fas fa-circle' style='color: #10b981; margin-right: 4px;'></i> Live monitoring... ({len(self.telemetry_history)} data points, {elapsed:.0f}s elapsed)"
                     time.sleep(interval)
             else:
                 # Timed monitoring
@@ -712,14 +753,14 @@ class TelemetryGUI:
                     self.telemetry_history.append(data)
                     elapsed = time.time() - self.monitoring_start_time
                     remaining = max(0, end_time - time.time())
-                    self.monitoring_status = f"🟢 Monitoring... ({len(self.telemetry_history)} points, {remaining:.0f}s remaining)"
+                    self.monitoring_status = f"<i class='fas fa-circle' style='color: #10b981; margin-right: 4px;'></i> Monitoring... ({len(self.telemetry_history)} points, {remaining:.0f}s remaining)"
                     time.sleep(interval)
             
             # Monitoring ended
             if self.is_monitoring:  # Only update if it ended naturally (not stopped manually)
                 points = len(self.telemetry_history)
                 elapsed = time.time() - self.monitoring_start_time
-                self.monitoring_status = f"✅ Monitoring completed! Collected {points} data points over {elapsed:.0f} seconds."
+                self.monitoring_status = f"<i class='fas fa-check-circle' style='color: #10b981; margin-right: 4px;'></i> Monitoring completed! Collected {points} data points over {elapsed:.0f} seconds."
                 self.monitoring_completed = True
             self.is_monitoring = False
             self.is_live_monitoring = False
@@ -728,9 +769,9 @@ class TelemetryGUI:
         self.monitor_thread.start()
         
         if live:
-            status_msg = "🟢 Live monitoring started! Click Stop to end."
+            status_msg = "<i class='fas fa-circle' style='color: #10b981; margin-right: 4px;'></i> Live monitoring started! Click Stop to end."
         else:
-            status_msg = f"🟢 Monitoring started for {duration} seconds!"
+            status_msg = f"<i class='fas fa-circle' style='color: #10b981; margin-right: 4px;'></i> Monitoring started for {duration} seconds!"
         
         return status_msg, gr.update()
     
@@ -744,7 +785,7 @@ class TelemetryGUI:
         if was_monitoring:
             points = len(self.telemetry_history)
             elapsed = time.time() - self.monitoring_start_time if self.monitoring_start_time else 0
-            status_msg = f"⏹️ Monitoring stopped. Collected {points} data points over {elapsed:.0f} seconds."
+            status_msg = f"<i class='fas fa-stop-circle' style='color: #ef4444; margin-right: 4px;'></i> Monitoring stopped. Collected {points} data points over {elapsed:.0f} seconds."
             self.monitoring_status = status_msg
             return status_msg, gr.update()
         else:
@@ -754,9 +795,9 @@ class TelemetryGUI:
         """Get current monitoring status"""
         if self.is_monitoring:
             return self.monitoring_status
-        elif self.monitoring_completed or self.monitoring_status.startswith("✅"):
+        elif self.monitoring_completed or "<i class='fas fa-check-circle'" in self.monitoring_status:
             return self.monitoring_status  # Keep completion message
-        elif self.monitoring_status.startswith("⏹️"):
+        elif "<i class='fas fa-stop-circle'" in self.monitoring_status:
             return self.monitoring_status  # Keep stop message
         else:
             return "Ready - Click 'Start Monitoring' to begin"
@@ -773,7 +814,7 @@ class TelemetryGUI:
         
         html = f"""
         <div style='font-family: monospace; font-size: 14px;'>
-            <h3>📊 Current Metrics</h3>
+            <h3><i class='fas fa-chart-line' style='margin-right: 6px;'></i> Current Metrics</h3>
             <p><strong>CPU:</strong> {cpu:.1f}%</p>
             <p><strong>Memory:</strong> {mem:.1f}%</p>
             <p><strong>Disk:</strong> {disk:.1f}%</p>
@@ -884,7 +925,7 @@ class TelemetryGUI:
         
         # Add LLM insights if requested and available
         if use_llm:
-            result += "### 🤖 LLM Analysis\n\n"
+            result += "### <i class='fas fa-brain' style='margin-right: 6px;'></i> LLM Analysis\n\n"
             if self.llm_analyzer.is_available():
                 try:
                     result += "*Generating LLM insights... This may take a moment.*\n\n"
@@ -896,12 +937,12 @@ class TelemetryGUI:
                     if llm_insights and str(llm_insights).strip():
                         result += str(llm_insights).strip() + "\n\n"
                     else:
-                        result += "⚠️ *LLM returned empty response. Showing standard analysis below.*\n\n"
+                        result += "<i class='fas fa-exclamation-triangle' style='color: #f59e0b; margin-right: 4px;'></i> *LLM returned empty response. Showing standard analysis below.*\n\n"
                 except Exception as e:
-                    result += f"⚠️ *LLM analysis error: {str(e)}*\n"
+                    result += f"<i class='fas fa-exclamation-triangle' style='color: #f59e0b; margin-right: 4px;'></i> *LLM analysis error: {str(e)}*\n"
                     result += "*Showing standard analysis below.*\n\n"
             else:
-                result += "⚠️ *LLM not available.*\n"
+                result += "<i class='fas fa-exclamation-triangle' style='color: #f59e0b; margin-right: 4px;'></i> *LLM not available.*\n"
                 result += "*To enable LLM insights, configure an LLM provider in the Settings tab.*\n"
                 result += "*Showing standard analysis below.*\n\n"
             result += "---\n\n"
@@ -909,9 +950,9 @@ class TelemetryGUI:
         # Performance Insights
         insights = analysis.get('performance_insights', {})
         if 'current_status' in insights:
-            result += "### 📊 Performance Status\n"
+            result += "### <i class='fas fa-chart-line' style='margin-right: 6px;'></i> Performance Status\n"
             for metric, data in insights['current_status'].items():
-                status_icon = "🔴" if data.get('status') == 'high' else "🟡" if data.get('status') == 'moderate' else "🟢"
+                status_icon = "<i class='fas fa-circle' style='color: #ef4444; margin-right: 4px;'></i>" if data.get('status') == 'high' else "<i class='fas fa-circle' style='color: #f59e0b; margin-right: 4px;'></i>" if data.get('status') == 'moderate' else "<i class='fas fa-circle' style='color: #10b981; margin-right: 4px;'></i>"
                 
                 # Handle different metric types
                 if metric == 'temperature':
@@ -969,25 +1010,25 @@ class TelemetryGUI:
         # Anomaly Detection
         anomaly = analysis.get('anomaly_detection', {})
         if anomaly.get('anomalies_detected', 0) > 0:
-            result += f"\n### 🔍 Anomalies Detected\n"
+            result += f"\n### <i class='fas fa-search' style='margin-right: 6px;'></i> Anomalies Detected\n"
             result += f"- Found {anomaly['anomalies_detected']} anomalies ({anomaly.get('anomaly_percentage', 0):.1f}%)\n"
         
         # Predictions
         if 'predictions' in analysis:
             predictions = analysis['predictions']
             if 'error' in predictions:
-                result += f"\n### 🔮 Anomaly Predictions\n"
-                result += f"⚠️ {predictions['error']}\n"
+                result += f"\n### <i class='fas fa-crystal-ball' style='margin-right: 6px;'></i> Anomaly Predictions\n"
+                result += f"<i class='fas fa-exclamation-triangle' style='color: #f59e0b; margin-right: 4px;'></i> {predictions['error']}\n"
             elif 'anomaly_predictions' in predictions:
                 pred_data = predictions['anomaly_predictions']
                 if pred_data.get('success'):
                     summary = pred_data.get('summary', {})
-                    result += f"\n### 🔮 Anomaly Predictions ({summary.get('total_steps', 0)} steps ahead)\n"
+                    result += f"\n### <i class='fas fa-crystal-ball' style='margin-right: 6px;'></i> Anomaly Predictions ({summary.get('total_steps', 0)} steps ahead)\n"
                     result += f"- **Predicted anomalies:** {summary.get('predicted_anomalies', 0)} ({summary.get('anomaly_percentage', 0):.1f}%)\n"
                     
                     high_risk = summary.get('high_risk_steps', [])
                     if high_risk:
-                        result += f"- **⚠️ High-risk steps:** {', '.join(map(str, high_risk[:10]))}\n"
+                        result += f"- **<i class='fas fa-exclamation-triangle' style='color: #f59e0b; margin-right: 4px;'></i> High-risk steps:** {', '.join(map(str, high_risk[:10]))}\n"
                     
                     # Show detailed predictions for high-risk steps
                     anomaly_preds = pred_data.get('anomaly_predictions', [])
@@ -1018,13 +1059,13 @@ class TelemetryGUI:
         
         # Recommendations
         if insights.get('recommendations'):
-            result += f"\n### 💡 Recommendations\n"
+            result += f"\n### <i class='fas fa-lightbulb' style='margin-right: 6px;'></i> Recommendations\n"
             for rec in insights['recommendations']:
                 result += f"- {rec}\n"
         
         # Archive info
         if self.archive and self.last_archived_session:
-            result += f"\n### 💾 Archive\n"
+            result += f"\n### <i class='fas fa-archive' style='margin-right: 6px;'></i> Archive\n"
             result += f"- Session archived: `{self.last_archived_session}`\n"
             if system_logs:
                 correlated = len(self.archive.get_correlated_events(self.last_archived_session))
@@ -1041,7 +1082,7 @@ class TelemetryGUI:
         if not sessions:
             return "No archived sessions found."
         
-        result = "## 📚 Archived Sessions\n\n"
+        result = "## <i class='fas fa-list' style='margin-right: 6px;'></i> Archived Sessions\n\n"
         result += f"Total: {len(sessions)} sessions\n\n"
         
         for session in sessions[:20]:  # Show last 20
@@ -1068,7 +1109,7 @@ class TelemetryGUI:
         if not session:
             return f"Session '{session_id}' not found."
         
-        result = f"## 📦 Session: {session_id}\n\n"
+        result = f"## <i class='fas fa-box' style='margin-right: 6px;'></i> Session: {session_id}\n\n"
         result += f"**Start Time:** {session.get('start_time')}\n"
         result += f"**End Time:** {session.get('end_time')}\n"
         result += f"**Data Points:** {len(session.get('telemetry_data', []))}\n\n"
@@ -1078,19 +1119,19 @@ class TelemetryGUI:
         if analysis:
             anomaly = analysis.get('anomaly_detection', {})
             if anomaly.get('anomalies_detected', 0) > 0:
-                result += f"### 🔍 Anomalies\n"
+                result += f"### <i class='fas fa-search' style='margin-right: 6px;'></i> Anomalies\n"
                 result += f"- Detected: {anomaly['anomalies_detected']} ({anomaly.get('anomaly_percentage', 0):.1f}%)\n\n"
         
         # Show correlated log events
         events = self.archive.get_correlated_events(session_id.strip())
         if events:
-            result += f"### 🔗 Correlated System Log Events ({len(events)})\n\n"
+            result += f"### <i class='fas fa-link' style='margin-right: 6px;'></i> Correlated System Log Events ({len(events)})\n\n"
             for event in events[:10]:  # Show top 10
                 result += f"**[{event['log_time']}]** {event['source']} - {event['level']}\n"
                 result += f"- {event['message'][:100]}{'...' if len(event['message']) > 100 else ''}\n"
                 result += f"- Correlation: {event['correlation_score']:.2f}\n\n"
         else:
-            result += "### 🔗 Correlated Log Events\n"
+            result += "### <i class='fas fa-link' style='margin-right: 6px;'></i> Correlated Log Events\n"
             result += "No correlated log events found.\n"
         
         return result
@@ -1101,7 +1142,7 @@ class TelemetryGUI:
             return "Archiving is not enabled."
         
         stats = self.archive.get_statistics()
-        result = "## 📊 Archive Statistics\n\n"
+        result = "## <i class='fas fa-chart-pie' style='margin-right: 6px;'></i> Archive Statistics\n\n"
         result += f"**Total Sessions:** {stats.get('total_sessions', 0)}\n"
         result += f"**Total Data Points:** {stats.get('total_data_points', 0):,}\n"
         result += f"**Total Anomalies:** {stats.get('total_anomalies', 0)}\n"
@@ -1113,27 +1154,140 @@ class TelemetryGUI:
         
         return result
     
+    def _icon(self, icon_name: str, style: str = "fas") -> str:
+        """Generate Font Awesome icon HTML for Markdown/HTML components"""
+        return f"<i class='{style} fa-{icon_name}' style='margin-right: 6px;'></i>"
+    
+    def _icon_unicode(self, icon_name: str) -> str:
+        """Get Unicode symbol for buttons/tabs (components that don't support HTML)"""
+        icon_map = {
+            'play': '▶️',
+            'stop': '⏹️',
+            'sync': '🔄',
+            'search': '🔍',
+            'brain': '🤖',
+            'cog': '⚙️',
+            'hand-wave': '👋',
+            'chart-line': '📊',
+            'archive': '📦',
+            'list': '📚',
+            'chart-pie': '📊',
+            'save': '💾',
+            'check-circle': '✅',
+            'check': '✓',
+            'comments': '💬',
+            'paper-plane': '📤',
+            'chart-bar': '📈',
+            'crystal-ball': '🔮',
+            'lightbulb': '💡',
+            'desktop': '🖥️',
+            'clipboard-list': '📋',
+            'link': '🔗',
+            'box': '📦',
+            'hourglass-half': '⏳',
+            'robot': '🤖'
+        }
+        return icon_map.get(icon_name, '•')
+    
     def create_interface(self):
         """Create the Gradio interface"""
-        with gr.Blocks(title="AI Telemetry Monitor", theme=gr.themes.Soft()) as app:
-            gr.Markdown("# 🤖 AI Telemetry Monitoring & Analysis")
+        # Add Font Awesome for icons with CSS-based icon injection for buttons
+        custom_css = """
+        @import url('https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css');
+        
+        .fa-icon { margin-right: 6px; display: inline-block; }
+        
+        /* Add Font Awesome icons to buttons using CSS classes */
+        .icon-play::before { content: "\\f04b"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
+        .icon-stop::before { content: "\\f04d"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
+        .icon-sync::before { content: "\\f021"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
+        .icon-search::before { content: "\\f002"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
+        .icon-brain::before { content: "\\f5dc"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
+        .icon-save::before { content: "\\f0c7"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
+        .icon-check-circle::before { content: "\\f058"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
+        .icon-paper-plane::before { content: "\\f1d8"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
+        .icon-list::before { content: "\\f03a"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
+        .icon-chart-pie::before { content: "\\f200"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
+        
+        /* Add icons to tabs using JavaScript-injected classes */
+        .tab-icon-welcome::before { content: "\\f4ad"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
+        .tab-icon-settings::before { content: "\\f013"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
+        .tab-icon-monitoring::before { content: "\\f201"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
+        .tab-icon-archive::before { content: "\\f187"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
+        
+        /* Add icon to checkbox label */
+        .checkbox-icon-predictions::before { content: "\\f6e8"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
+        """
+        
+        # JavaScript to add icon classes to tabs and checkbox
+        custom_js = """
+        function addTabIcons() {
+            // Add icons to tab buttons
+            setTimeout(() => {
+                const tabButtons = document.querySelectorAll('.tab-nav button, button[role="tab"]');
+                tabButtons.forEach(btn => {
+                    const text = btn.textContent.trim();
+                    if (text === 'Welcome') {
+                        btn.classList.add('tab-icon-welcome');
+                    } else if (text === 'Settings') {
+                        btn.classList.add('tab-icon-settings');
+                    } else if (text === 'Monitoring') {
+                        btn.classList.add('tab-icon-monitoring');
+                    } else if (text === 'Archive') {
+                        btn.classList.add('tab-icon-archive');
+                    }
+                });
+                
+                // Add icon to checkbox label
+                const checkboxes = document.querySelectorAll('label');
+                checkboxes.forEach(label => {
+                    if (label.textContent.includes('Include Predictions')) {
+                        label.classList.add('checkbox-icon-predictions');
+                    }
+                });
+            }, 100);
+        }
+        
+        document.addEventListener('DOMContentLoaded', addTabIcons);
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', addTabIcons);
+        } else {
+            addTabIcons();
+        }
+        
+        // Re-run after Gradio updates
+        if (window.gradio) {
+            const originalUpdate = window.gradio.update;
+            window.gradio.update = function(...args) {
+                const result = originalUpdate.apply(this, args);
+                setTimeout(addTabIcons, 100);
+                return result;
+            };
+        }
+        """
+        
+        with gr.Blocks(title="AI Telemetry Monitor", theme=gr.themes.Soft(), css=custom_css, head=f"<script>{custom_js}</script>") as app:
+            gr.HTML("<h1><i class='fas fa-robot' style='margin-right: 8px;'></i> AI Telemetry Monitoring & Analysis</h1>")
             gr.Markdown("Monitor your system in real-time and chat with AI about your telemetry data")
             
             # Define shared components that need to be updated from multiple tabs
             llm_status_display = gr.Markdown(
-                value=f"**🤖 LLM:** {self.llm_analyzer.provider.upper()} - {self.llm_analyzer.get_model_info()}\n"
-                      f"**Status:** {'✓ Connected' if self.llm_analyzer.is_available() else '✗ Not available'}\n\n"
-                      f"💡 *Configure LLM settings in the Settings tab*"
+                value=f"**LLM:** {self.llm_analyzer.provider.upper()} - {self.llm_analyzer.get_model_info()}\n"
+                      f"**Status:** {'Connected' if self.llm_analyzer.is_available() else 'Not available'}\n\n"
+                      f"*Note: Configure LLM settings in the Settings tab*"
             )
             
             # Create tabs for different sections
             with gr.Tabs():
                 # Welcome/Settings tab (show first if first run, otherwise show as Settings)
-                tab_name = "👋 Welcome" if self.config.is_first_run() else "⚙️ Settings"
+                if self.config.is_first_run():
+                    tab_name = "Welcome"
+                else:
+                    tab_name = "Settings"
                 with gr.TabItem(tab_name):
                     welcome_content = gr.HTML(value=self.get_welcome_page_content())
                     
-                    gr.Markdown("## 🤖 LLM Configuration")
+                    gr.Markdown(f"## {self._icon('brain')} LLM Configuration")
                     gr.Markdown("Configure your AI assistant provider and model")
                     
                     with gr.Row():
@@ -1167,7 +1321,7 @@ class TelemetryGUI:
                     )
                     
                     llm_status = gr.Textbox(
-                        value="✓ Connected" if self.llm_analyzer.is_available() else "✗ Not available",
+                        value="Connected" if self.llm_analyzer.is_available() else "Not available",
                         label="Status",
                         interactive=False
                     )
@@ -1185,27 +1339,29 @@ class TelemetryGUI:
                         # Save to config
                         self.config.set_llm_config(provider, model)
                         # Update the monitoring tab display
+                        status_icon = "<i class='fas fa-check-circle' style='color: #10b981; margin-right: 4px;'></i>" if self.llm_analyzer.is_available() else "<i class='fas fa-times-circle' style='color: #ef4444; margin-right: 4px;'></i>"
+                        status_text = "Connected" if self.llm_analyzer.is_available() else "Not available"
                         updated_display = (
-                            f"**🤖 LLM:** {self.llm_analyzer.provider.upper()} - {self.llm_analyzer.get_model_info()}\n"
-                            f"**Status:** {'✓ Connected' if self.llm_analyzer.is_available() else '✗ Not available'}\n\n"
-                            f"💡 *Configure LLM settings in the Settings tab*"
+                            f"**<i class='fas fa-brain' style='margin-right: 4px;'></i> LLM:** {self.llm_analyzer.provider.upper()} - {self.llm_analyzer.get_model_info()}\n"
+                            f"**Status:** {status_icon} {status_text}\n\n"
+                            f"<i class='fas fa-lightbulb' style='margin-right: 4px;'></i> *Configure LLM settings in the Settings tab*"
                         )
                         return status, model_info, updated_display
                     
                     def update_hint(provider, status):
                         """Update hint as string for Markdown component"""
-                        if "✓" in status or "Connected" in status:
+                        if "check-circle" in status or "Connected" in status:
                             return ""
                         if provider == "llamacpp":
-                            return "💡 *Local model not found. Download a model first: `python scripts/download_model.py`*"
+                            return "<i class='fas fa-lightbulb' style='margin-right: 4px;'></i> *Local model not found. Download a model first: `python scripts/download_model.py`*"
                         elif provider == "ollama":
-                            return "💡 *Ollama not detected. Start Ollama (`ollama serve`) or use local model.*"
+                            return "<i class='fas fa-lightbulb' style='margin-right: 4px;'></i> *Ollama not detected. Start Ollama (`ollama serve`) or use local model.*"
                         elif provider in ["openai", "anthropic"]:
-                            return f"💡 *Set {provider.upper()}_API_KEY environment variable.*"
+                            return f"<i class='fas fa-lightbulb' style='margin-right: 4px;'></i> *Set {provider.upper()}_API_KEY environment variable.*"
                         else:
-                            return "💡 *Check your configuration.*"
+                            return "<i class='fas fa-lightbulb' style='margin-right: 4px;'></i> *Check your configuration.*"
                     
-                    apply_llm_btn = gr.Button("💾 Save LLM Settings", variant="primary")
+                    apply_llm_btn = gr.Button("Save LLM Settings", variant="primary", elem_classes=["icon-save"])
                     apply_llm_btn.click(
                         fn=apply_llm_settings,
                         inputs=[llm_provider_dropdown, llm_model_dropdown],
@@ -1221,16 +1377,16 @@ class TelemetryGUI:
                     if not self.llm_analyzer.is_available():
                         initial_hint = ""
                         if self.llm_analyzer.provider == "llamacpp":
-                            initial_hint = "💡 *Local model not found. Download a model first: `python scripts/download_model.py`*"
+                            initial_hint = "<i class='fas fa-lightbulb' style='margin-right: 4px;'></i> *Local model not found. Download a model first: `python scripts/download_model.py`*"
                         elif self.llm_analyzer.provider == "ollama":
-                            initial_hint = "💡 *Ollama not detected. Start Ollama (`ollama serve`) or use local model.*"
+                            initial_hint = "<i class='fas fa-lightbulb' style='margin-right: 4px;'></i> *Ollama not detected. Start Ollama (`ollama serve`) or use local model.*"
                         elif self.llm_analyzer.provider in ["openai", "anthropic"]:
-                            initial_hint = f"💡 *Set {self.llm_analyzer.provider.upper()}_API_KEY environment variable.*"
+                            initial_hint = f"<i class='fas fa-lightbulb' style='margin-right: 4px;'></i> *Set {self.llm_analyzer.provider.upper()}_API_KEY environment variable.*"
                         if initial_hint:
                             gr.Markdown(initial_hint)
                     
                     # Monitoring preferences
-                    gr.Markdown("## 📊 Monitoring Preferences")
+                    gr.Markdown(f"## {self._icon('chart-line')} Monitoring Preferences")
                     with gr.Row():
                         default_duration = gr.Slider(
                             minimum=10,
@@ -1258,9 +1414,9 @@ class TelemetryGUI:
                         self.config.set("monitoring.default_interval", float(interval))
                         self.config.set("archive.enabled", archive)
                         self.config.save_config()
-                        return "✓ Preferences saved!"
+                        return f"{self._icon('check')} Preferences saved!"
                     
-                    save_prefs_btn = gr.Button("💾 Save Preferences", variant="primary")
+                    save_prefs_btn = gr.Button("Save Preferences", variant="primary", elem_classes=["icon-save"])
                     prefs_status = gr.Markdown()
                     save_prefs_btn.click(
                         fn=save_monitoring_prefs,
@@ -1277,9 +1433,9 @@ class TelemetryGUI:
                         def complete_setup():
                             """Mark setup as complete"""
                             self.config.mark_setup_complete()
-                            return "✓ Setup complete! You can now use the Monitoring tab."
+                            return f"{self._icon('check-circle')} Setup complete! You can now use the Monitoring tab."
                         
-                        complete_btn = gr.Button("✅ Complete Setup", variant="primary")
+                        complete_btn = gr.Button("Complete Setup", variant="primary", elem_classes=["icon-check-circle"])
                         setup_status = gr.Markdown()
                         complete_btn.click(
                             fn=complete_setup,
@@ -1287,7 +1443,7 @@ class TelemetryGUI:
                             outputs=setup_status
                         )
                 
-                with gr.TabItem("📊 Monitoring"):
+                with gr.TabItem("Monitoring"):
                     with gr.Row():
                         with gr.Column(scale=1):
                             system_info = gr.HTML(value=self.get_system_info_display())
@@ -1311,24 +1467,22 @@ class TelemetryGUI:
                             
                             live_monitoring = gr.Checkbox(
                                 value=False,
-                                label="🔴 Live Monitoring (continuous until stopped)",
+                                label="Live Monitoring (continuous until stopped)",
                                 info="Enable for continuous monitoring without time limit"
                             )
                             
                             with gr.Row():
-                                start_btn = gr.Button("▶️ Start Monitoring", variant="primary")
-                                stop_btn = gr.Button("⏹️ Stop Monitoring")
-                                refresh_btn = gr.Button("🔄 Refresh", variant="secondary")
+                                start_btn = gr.Button("Start Monitoring", variant="primary", elem_classes=["icon-play"])
+                                stop_btn = gr.Button("Stop Monitoring", elem_classes=["icon-stop"])
+                                refresh_btn = gr.Button("Refresh", variant="secondary", elem_classes=["icon-sync"])
                             
-                            status = gr.Textbox(
-                                label="Status",
-                                interactive=False,
+                            status = gr.Markdown(
                                 value="Ready - Click 'Start Monitoring' to begin"
                             )
                             
                             # Helpful tip about checking completion
                             gr.Markdown(
-                                "💡 **Tip:** Click '🔄 Refresh' to check if monitoring has completed.",
+                                f"<i class='fas fa-lightbulb' style='margin-right: 4px;'></i> **Tip:** Click 'Refresh' to check if monitoring has completed.",
                                 visible=True
                             )
                         
@@ -1337,7 +1491,7 @@ class TelemetryGUI:
                     
                     with gr.Row():
                         with gr.Column(scale=1):
-                            gr.Markdown("## 💬 Chat with AI")
+                            gr.Markdown(f"## {self._icon('comments')} Chat with AI")
                             chatbot = gr.Chatbot(label="Ask questions about your system")
                             msg = gr.Textbox(
                                 label="Message",
@@ -1345,21 +1499,22 @@ class TelemetryGUI:
                                 lines=2
                             )
                             msg.submit(self.chat_with_ai, [msg, chatbot], [msg, chatbot])
-                            chat_btn = gr.Button("Send", variant="primary")
+                            chat_btn = gr.Button("Send", variant="primary", elem_classes=["icon-paper-plane"])
                             chat_btn.click(self.chat_with_ai, [msg, chatbot], [msg, chatbot])
                         
                         with gr.Column(scale=1):
-                            gr.Markdown("## 📈 Analysis")
+                            gr.Markdown(f"## {self._icon('chart-bar')} Analysis")
                             with gr.Row():
-                                analyze_btn = gr.Button("🔍 Run AI Analysis", variant="secondary")
-                                analyze_llm_btn = gr.Button("🤖 AI + LLM", variant="primary")
+                                analyze_btn = gr.Button("Run AI Analysis", variant="secondary", elem_classes=["icon-search"])
+                                analyze_llm_btn = gr.Button("AI + LLM", variant="primary", elem_classes=["icon-brain"])
                             
                             # Prediction options
                             with gr.Row():
                                 enable_predictions = gr.Checkbox(
                                     value=False,
-                                    label="🔮 Include Predictions",
-                                    info="Predict future anomalies (requires 20+ data points)"
+                                    label="Include Predictions",
+                                    info="Predict future anomalies (requires 20+ data points)",
+                                    elem_classes=["checkbox-icon-predictions"]
                                 )
                                 prediction_steps = gr.Slider(
                                     minimum=5,
@@ -1389,15 +1544,15 @@ class TelemetryGUI:
                 
                 # Archive tab (if archiving is enabled)
                 if self.archive:
-                    with gr.TabItem("📦 Archive"):
+                    with gr.TabItem("Archive"):
                         gr.Markdown("## Historical Data Archive")
                         gr.Markdown("View and query archived telemetry sessions with system log correlations")
                         
                         with gr.Row():
                             with gr.Column(scale=1):
                                 gr.Markdown("### Archive Management")
-                                list_sessions_btn = gr.Button("📚 List All Sessions", variant="primary")
-                                archive_stats_btn = gr.Button("📊 Archive Statistics", variant="secondary")
+                                list_sessions_btn = gr.Button("List All Sessions", variant="primary", elem_classes=["icon-list"])
+                                archive_stats_btn = gr.Button("Archive Statistics", variant="secondary", elem_classes=["icon-chart-pie"])
                                 sessions_output = gr.Markdown()
                             
                             with gr.Column(scale=1):
@@ -1407,7 +1562,7 @@ class TelemetryGUI:
                                     placeholder="e.g., session_20260103_141413",
                                     lines=1
                                 )
-                                query_session_btn = gr.Button("🔍 Query Session", variant="primary")
+                                query_session_btn = gr.Button("Query Session", variant="primary", elem_classes=["icon-search"])
                                 session_output = gr.Markdown()
                         
                         # Archive button actions
@@ -1524,11 +1679,11 @@ class TelemetryGUI:
             def run_standard_analysis(enable_pred, steps):
                 """Run standard AI analysis without LLM"""
                 # Show immediate feedback
-                status = "## 🔄 Running AI Analysis...\n\n"
+                status = "## <i class='fas fa-sync fa-spin' style='margin-right: 6px;'></i> Running AI Analysis...\n\n"
                 if enable_pred:
-                    status += "⏳ *Training prediction models and analyzing data... This may take a moment.*\n\n"
+                    status += "<i class='fas fa-hourglass-half' style='margin-right: 6px;'></i> *Training prediction models and analyzing data... This may take a moment.*\n\n"
                 else:
-                    status += "⏳ *Analyzing telemetry data...*\n\n"
+                    status += "<i class='fas fa-hourglass-half' style='margin-right: 6px;'></i> *Analyzing telemetry data...*\n\n"
                 yield status
                 
                 # Run the actual analysis
@@ -1538,11 +1693,11 @@ class TelemetryGUI:
             def run_llm_analysis(enable_pred, steps):
                 """Run AI analysis with LLM insights"""
                 # Show immediate feedback
-                status = "## 🔄 Running AI + LLM Analysis...\n\n"
+                status = "## <i class='fas fa-sync fa-spin' style='margin-right: 6px;'></i> Running AI + LLM Analysis...\n\n"
                 if enable_pred:
-                    status += "⏳ *Training prediction models, analyzing data, and generating LLM insights... This may take longer.*\n\n"
+                    status += "<i class='fas fa-hourglass-half' style='margin-right: 6px;'></i> *Training prediction models, analyzing data, and generating LLM insights... This may take longer.*\n\n"
                 else:
-                    status += "⏳ *Analyzing data and generating LLM insights... This may take a moment.*\n\n"
+                    status += "<i class='fas fa-hourglass-half' style='margin-right: 6px;'></i> *Analyzing data and generating LLM insights... This may take a moment.*\n\n"
                 yield status
                 
                 # Run the actual analysis
