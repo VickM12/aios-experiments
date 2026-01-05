@@ -6,6 +6,7 @@ Supports Ollama API, OpenAI, Anthropic, and local llama-cpp-python models
 import os
 import subprocess
 import requests
+import threading
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 import json
@@ -22,6 +23,8 @@ class LLMAnalyzer:
         self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
         self.llama_cpp_model = None
         self.client = None  # Initialize client to None
+        # Thread lock for llama-cpp models (not thread-safe)
+        self._llm_lock = threading.Lock()
         self._setup_client()
     
     def _get_default_model(self) -> str:
@@ -461,15 +464,16 @@ Keep the response concise and actionable."""
 
         try:
             if self.provider == "llamacpp" and self.llama_cpp_model:
-                # Use llama-cpp-python for local inference
+                # Use llama-cpp-python for local inference (thread-safe with lock)
                 full_prompt = f"You are a system monitoring expert analyzing telemetry data.\n\n{prompt}"
-                response = self.llama_cpp_model(
-                    full_prompt,
-                    max_tokens=1000,
-                    temperature=0.7,
-                    stop=["\n\n\n", "Human:", "User:"],
-                    echo=False
-                )
+                with self._llm_lock:  # Prevent concurrent access to model
+                    response = self.llama_cpp_model(
+                        full_prompt,
+                        max_tokens=1000,
+                        temperature=0.7,
+                        stop=["\n\n\n", "Human:", "User:"],
+                        echo=False
+                    )
                 result = response.get('choices', [{}])[0].get('text', '')
                 return result.strip() if result else 'Error: Empty response from model'
             elif self.provider == "ollama":
@@ -561,15 +565,16 @@ Provide: 1) System health assessment 2) Concerning patterns 3) Optimization reco
 
         try:
             if self.provider == "llamacpp" and self.llama_cpp_model:
-                # Use llama-cpp-python for local inference
+                # Use llama-cpp-python for local inference (thread-safe with lock)
                 full_prompt = f"You are a system performance analyst.\n\n{prompt}"
-                response = self.llama_cpp_model(
-                    full_prompt,
-                    max_tokens=1000,
-                    temperature=0.7,
-                    stop=["\n\n\n", "Human:", "User:"],
-                    echo=False
-                )
+                with self._llm_lock:  # Prevent concurrent access to model
+                    response = self.llama_cpp_model(
+                        full_prompt,
+                        max_tokens=1000,
+                        temperature=0.7,
+                        stop=["\n\n\n", "Human:", "User:"],
+                        echo=False
+                    )
                 result = response.get('choices', [{}])[0].get('text', '')
                 return result.strip() if result else 'Error: Empty response from model'
             elif self.provider == "ollama":
@@ -925,15 +930,16 @@ Provide a clear, accurate answer based on the data. Reference specific values wh
 
         try:
             if self.provider == "llamacpp" and self.llama_cpp_model:
-                # Use llama-cpp-python for local inference
+                # Use llama-cpp-python for local inference (thread-safe with lock)
                 full_prompt = f"You are a helpful system monitoring assistant.\n\n{prompt}"
-                response = self.llama_cpp_model(
-                    full_prompt,
-                    max_tokens=1000,
-                    temperature=0.7,
-                    stop=["\n\n\n", "Human:", "User:"],
-                    echo=False
-                )
+                with self._llm_lock:  # Prevent concurrent access to model
+                    response = self.llama_cpp_model(
+                        full_prompt,
+                        max_tokens=1000,
+                        temperature=0.7,
+                        stop=["\n\n\n", "Human:", "User:"],
+                        echo=False
+                    )
                 result = response.get('choices', [{}])[0].get('text', '')
                 return result.strip() if result else 'Error: Empty response from model'
             elif self.provider == "ollama":

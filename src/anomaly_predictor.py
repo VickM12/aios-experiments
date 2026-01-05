@@ -74,7 +74,7 @@ class AnomalyPredictor:
             }
         
         # Prepare features
-        from ai_analyzer import TelemetryAnalyzer
+        from .ai_analyzer import TelemetryAnalyzer
         analyzer = TelemetryAnalyzer()
         df = analyzer.prepare_features(telemetry_data)
         
@@ -145,7 +145,7 @@ class AnomalyPredictor:
             }
         
         # Prepare features from recent data
-        from ai_analyzer import TelemetryAnalyzer
+        from .ai_analyzer import TelemetryAnalyzer
         analyzer = TelemetryAnalyzer()
         df = analyzer.prepare_features(telemetry_data)
         df = self.prepare_time_features(df)
@@ -242,7 +242,7 @@ class AnomalyPredictor:
             return future_predictions
         
         # Prepare features for anomaly detection
-        from ai_analyzer import TelemetryAnalyzer
+        from .ai_analyzer import TelemetryAnalyzer
         analyzer = TelemetryAnalyzer()
         
         # Get historical data for context
@@ -311,7 +311,7 @@ class AnomalyPredictor:
             }
         
         # Prepare time-based features
-        from ai_analyzer import TelemetryAnalyzer
+        from .ai_analyzer import TelemetryAnalyzer
         analyzer = TelemetryAnalyzer()
         df = analyzer.prepare_features(telemetry_data)
         df = self.prepare_time_features(df)
