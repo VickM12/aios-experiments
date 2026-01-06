@@ -79,7 +79,19 @@ class TelemetryGUI:
                 response = requests.get("http://localhost:11434/api/tags", timeout=2)
                 if response.status_code == 200:
                     models = response.json().get('models', [])
-                    return [m.get('name', '') for m in models if m.get('name')]
+                    # Extract model names and filter out empty strings and non-strings
+                    model_names = []
+                    for m in models:
+                        if isinstance(m, dict):
+                            name = m.get('name', '')
+                        elif isinstance(m, str):
+                            name = m
+                        else:
+                            continue
+                        if name and isinstance(name, str) and name.strip():
+                            model_names.append(name.strip())
+                    if model_names:
+                        return model_names
             except:
                 pass
             return ["llama3.2", "llama2", "alpaca", "gemma3:1b"]
@@ -89,9 +101,9 @@ class TelemetryGUI:
             project_root = Path(__file__).parent.parent
             models_dir = project_root / "models"
             if models_dir.exists():
-                models = [f.name for f in models_dir.glob("*.gguf")]
+                models = [str(f.name) for f in models_dir.glob("*.gguf") if f.is_file()]
                 if models:
-                    return models
+                    return sorted(models)  # Sort for consistency
             # Return default even if no models found (user can type custom name)
             return ["gemma3-1b.gguf"]
         elif provider == "openai":
@@ -310,12 +322,13 @@ class TelemetryGUI:
                 if len(self.telemetry_history) >= 10:
                     analysis = self.analyzer.comprehensive_analysis(self.telemetry_history)
                 
-                # Use LLM to answer the question with full context
+                # Use LLM to answer the question with full context, including conversation history
                 response = self.llm_analyzer.answer_question(
                     message,
                     self.telemetry_history,
                     analysis,
-                    self.system_info
+                    self.system_info,
+                    conversation_history=history  # Pass conversation history for context
                 )
                 # If we got a valid response, use it
                 if response and str(response).strip():
@@ -1088,6 +1101,12 @@ class TelemetryGUI:
         .icon-chevron-left::before { content: "\\f053"; font-family: "Font Awesome 6 Free"; font-weight: 900; }
         .icon-chevron-right::before { content: "\\f054"; font-family: "Font Awesome 6 Free"; font-weight: 900; }
         .icon-times::before { content: "\\f00d"; font-family: "Font Awesome 6 Free"; font-weight: 900; }
+        .icon-download::before { content: "\\f019"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
+        .icon-spinner::before { content: "\\f110"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; animation: fa-spin 2s infinite linear; }
+        @keyframes fa-spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
         
         /* Make pagination and close buttons narrower */
         button.icon-chevron-left, button.icon-chevron-right, button.icon-times {
@@ -1202,9 +1221,29 @@ class TelemetryGUI:
                             label="Provider",
                             interactive=True
                         )
+                        # Get available models and ensure model value is a string
+                        available_models = self.get_available_models(self.llm_analyzer.provider)
+                        
+                        # Get current model value, ensuring it's a valid string
+                        current_model = self.llm_analyzer.model
+                        model_value = ""
+                        
+                        # Only use current_model if it's a valid string
+                        if isinstance(current_model, str) and current_model.strip():
+                            model_value = current_model.strip()
+                            # Check if it's a valid choice
+                            if model_value not in available_models:
+                                model_value = ""
+                        
+                        # If we don't have a valid model value, use the first available
+                        if not model_value and available_models:
+                            model_value = available_models[0]
+                        elif not model_value:
+                            model_value = ""
+                        
                         llm_model_dropdown = gr.Dropdown(
-                            choices=self.get_available_models(self.llm_analyzer.provider),
-                            value=self.llm_analyzer.model,
+                            choices=available_models,
+                            value=model_value,
                             label="Model",
                             interactive=True,
                             allow_custom_value=True
@@ -1213,9 +1252,33 @@ class TelemetryGUI:
                     def update_model_choices(provider):
                         """Update model dropdown when provider changes"""
                         models = self.get_available_models(provider)
-                        default_model = models[0] if models else ""
+                        
+                        # Filter out any non-string values and invalid strings
+                        valid_models = []
+                        for m in models:
+                            if m is None:
+                                continue
+                            # Only accept strings directly, or convert simple types
+                            if isinstance(m, str):
+                                model_str = m.strip()
+                            elif isinstance(m, (int, float)):
+                                model_str = str(m)
+                            else:
+                                # Skip objects, dicts, etc.
+                                continue
+                            
+                            # Reject "[object Object]" and empty strings
+                            if model_str and "[object" not in model_str.lower() and model_str:
+                                valid_models.append(model_str)
+                        
+                        # Get a valid default model - must be a clean string
+                        if valid_models:
+                            default_model = valid_models[0]
+                        else:
+                            default_model = ""
+                        
                         return {
-                            "choices": models,
+                            "choices": valid_models,
                             "value": default_model
                         }
                     
@@ -1258,7 +1321,7 @@ class TelemetryGUI:
                         if "check-circle" in status or "Connected" in status:
                             return ""
                         if provider == "llamacpp":
-                            return "<i class='fas fa-lightbulb' style='margin-right: 4px;'></i> *Local model not found. Download a model first: `python scripts/download_model.py`*"
+                            return "<i class='fas fa-lightbulb' style='margin-right: 4px;'></i> *Local model not found. Download a model using the button below.*"
                         elif provider == "ollama":
                             return "<i class='fas fa-lightbulb' style='margin-right: 4px;'></i> *Ollama not detected. Start Ollama (`ollama serve`) or use local model.*"
                         elif provider in ["openai", "anthropic"]:
@@ -1282,13 +1345,88 @@ class TelemetryGUI:
                     if not self.llm_analyzer.is_available():
                         initial_hint = ""
                         if self.llm_analyzer.provider == "llamacpp":
-                            initial_hint = "<i class='fas fa-lightbulb' style='margin-right: 4px;'></i> *Local model not found. Download a model first: `python scripts/download_model.py`*"
+                            initial_hint = "<i class='fas fa-lightbulb' style='margin-right: 4px;'></i> *Local model not found. Download a model using the button below.*"
                         elif self.llm_analyzer.provider == "ollama":
                             initial_hint = "<i class='fas fa-lightbulb' style='margin-right: 4px;'></i> *Ollama not detected. Start Ollama (`ollama serve`) or use local model.*"
                         elif self.llm_analyzer.provider in ["openai", "anthropic"]:
                             initial_hint = f"<i class='fas fa-lightbulb' style='margin-right: 4px;'></i> *Set {self.llm_analyzer.provider.upper()}_API_KEY environment variable.*"
                         if initial_hint:
                             gr.Markdown(initial_hint)
+                    
+                    # Model download section for llamacpp
+                    gr.Markdown("---")
+                    gr.Markdown(f"### {self._icon('download')} Download Local Model")
+                    gr.Markdown("Download a model from Ollama for use with llama-cpp-python")
+                    
+                    with gr.Row():
+                        download_model_input = gr.Textbox(
+                            value="gemma3:1b",
+                            label="Model Name",
+                            placeholder="e.g., gemma3:1b, llama3.2, mistral",
+                            info="Enter the Ollama model name to download"
+                        )
+                        download_btn = gr.Button("Download Model", variant="primary", elem_classes=["icon-download"])
+                    
+                    download_status = gr.Markdown(visible=True)
+                    
+                    def download_model_wrapper(model_name: str):
+                        """Download a model from Ollama and save locally"""
+                        if not model_name or not model_name.strip():
+                            return f"{self._icon('exclamation-triangle')} Please enter a model name."
+                        
+                        model_name = model_name.strip()
+                        
+                        try:
+                            # Import download functions
+                            import sys
+                            from pathlib import Path
+                            scripts_dir = Path(__file__).parent.parent / "scripts"
+                            if str(scripts_dir) not in sys.path:
+                                sys.path.insert(0, str(scripts_dir))
+                            
+                            from download_model import download_model, get_ollama_models
+                            
+                            # Check if Ollama is available
+                            try:
+                                available_models = get_ollama_models()
+                                if not available_models:
+                                    return f"{self._icon('exclamation-triangle')} **Error:** Cannot connect to Ollama. Make sure Ollama is running (`ollama serve`)."
+                            except Exception as e:
+                                return f"{self._icon('exclamation-triangle')} **Error:** Cannot connect to Ollama: {str(e)}\n\nMake sure Ollama is running: `ollama serve`"
+                            
+                            # Start download
+                            status_msg = f"{self._icon('spinner')} **Downloading model:** `{model_name}`\n\n"
+                            status_msg += "This may take several minutes depending on model size...\n"
+                            
+                            # Download the model (this may take a while)
+                            result = download_model(model_name)
+                            
+                            if result:
+                                # Success - update model dropdown and status
+                                saved_name = result.name
+                                status_msg = f"{self._icon('check-circle')} **Success!** Model downloaded and saved to:\n`{result}`\n\n"
+                                status_msg += f"You can now select `{saved_name}` in the Model dropdown above."
+                                
+                                # Refresh model list
+                                try:
+                                    updated_models = self.get_available_models("llamacpp")
+                                    return status_msg, gr.update(choices=updated_models, value=saved_name)
+                                except:
+                                    return status_msg, gr.update()
+                            else:
+                                error_msg = f"{self._icon('times-circle')} **Error:** Failed to download model `{model_name}`.\n\nPlease check:\n- Ollama is running (`ollama serve`)\n- Model name is correct\n- You have enough disk space"
+                                return error_msg, gr.update()
+                        
+                        except ImportError as e:
+                            return f"{self._icon('exclamation-triangle')} **Error:** Could not import download functions: {str(e)}", gr.update()
+                        except Exception as e:
+                            return f"{self._icon('times-circle')} **Error:** {str(e)}", gr.update()
+                    
+                    download_btn.click(
+                        fn=download_model_wrapper,
+                        inputs=download_model_input,
+                        outputs=[download_status, llm_model_dropdown]
+                    )
                     
                     # Monitoring preferences
                     gr.Markdown(f"## {self._icon('chart-line')} Monitoring Preferences")

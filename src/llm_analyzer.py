@@ -908,8 +908,9 @@ Provide: 1) System health assessment 2) Concerning patterns 3) Optimization reco
     
     def answer_question(self, question: str, telemetry_data: List[Dict[str, Any]], 
                        analysis: Dict[str, Any] = None,
-                       system_info: Dict[str, Any] = None) -> str:
-        """Answer a question about the telemetry data"""
+                       system_info: Dict[str, Any] = None,
+                       conversation_history: List[Dict[str, str]] = None) -> str:
+        """Answer a question about the telemetry data with optional conversation history"""
         if not self.is_available():
             return "LLM not available. Set OPENAI_API_KEY or ANTHROPIC_API_KEY environment variable."
         
@@ -919,14 +920,29 @@ Provide: 1) System health assessment 2) Concerning patterns 3) Optimization reco
         # Create a more concise prompt to avoid token limits
         context_str = json.dumps(context, indent=1, default=str)
         
-        prompt = f"""You are a system performance analyst. Answer the user's question using the telemetry data below.
+        # Include conversation history if provided
+        history_context = ""
+        if conversation_history and len(conversation_history) > 0:
+            # Format conversation history (the current question is not in history yet, so include all)
+            history_messages = []
+            for msg in conversation_history:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if content and content.strip():
+                    history_messages.append(f"{role.capitalize()}: {content}")
+            
+            if history_messages:
+                # Include last 6 messages (3 exchanges) for context to avoid token limits
+                history_context = "\n\nPrevious conversation:\n" + "\n".join(history_messages[-6:])
+        
+        prompt = f"""You are a system performance analyst. Answer the user's question using the telemetry data below.{history_context}
 
 Question: {question}
 
 Telemetry Data:
 {context_str}
 
-Provide a clear, accurate answer based on the data. Reference specific values when relevant."""
+Provide a clear, accurate answer based on the data. Reference specific values when relevant. If the question refers to previous conversation, use that context to provide a more helpful answer."""
 
         try:
             if self.provider == "llamacpp" and self.llama_cpp_model:
