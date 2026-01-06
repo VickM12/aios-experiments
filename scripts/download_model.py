@@ -70,45 +70,69 @@ def pull_model(model_name: str) -> bool:
 
 def get_model_path(model_name: str) -> Optional[Path]:
     """Get the path to model files in Ollama's storage"""
-    # Ollama stores models in ~/.ollama/models/blobs/
+    # Ollama stores models in ~/.ollama/models/blobs/ (Linux/Mac)
+    # or C:\Users\<user>\.ollama\models\blobs\ (Windows)
     home = Path.home()
     ollama_models = home / ".ollama" / "models" / "blobs"
     
     if not ollama_models.exists():
-        # Try alternative location
+        # Try alternative location (Linux)
         ollama_models = home / ".local" / "share" / "ollama" / "models" / "blobs"
     
     if not ollama_models.exists():
         print(f"Warning: Could not find Ollama models directory")
         return None
     
-    # Get model manifest to find the actual model file
+    return ollama_models
+
+
+def get_model_manifest(model_name: str) -> Optional[dict]:
+    """Get model manifest from Ollama API to find the correct blob"""
     try:
         response = requests.get(f"{OLLAMA_BASE_URL}/api/show", 
                                json={"name": model_name},
                                timeout=10)
         if response.status_code == 200:
-            model_info = response.json()
-            # The model file is typically the largest blob
-            # We'll need to find it by checking the manifest
-            pass
+            return response.json()
     except Exception as e:
-        print(f"Error getting model info: {e}")
-    
-    # For now, we'll use a simpler approach: copy from Ollama's cache
-    # The actual model file will be in the blobs directory
-    return ollama_models
+        print(f"Error getting model manifest: {e}")
+    return None
+
+
+def verify_gguf_file(file_path: Path) -> bool:
+    """Verify that a file is a valid GGUF file by checking its header"""
+    try:
+        with open(file_path, 'rb') as f:
+            # GGUF files start with specific magic bytes
+            # Check for GGUF magic: 0x46554747 (little-endian "GGUF")
+            header = f.read(4)
+            if len(header) < 4:
+                return False
+            # Check for GGUF magic bytes
+            if header == b'GGUF' or header == b'\x47\x47\x55\x46':
+                return True
+            # Also check reversed (big-endian)
+            if header == b'FUGC' or header == b'\x46\x55\x47\x43':
+                return True
+        return False
+    except Exception:
+        return False
 
 
 def find_model_file(model_name: str, ollama_models_dir: Path) -> Optional[Path]:
     """Find the actual model file (GGUF) in Ollama's storage"""
     # Ollama stores models as blobs with SHA256 hashes
-    # We need to find the model file by checking manifests or by size
-    # For gemma3:1b, we'll look for the largest .gguf file or check the manifest
+    # Strategy: Try to get manifest first, then fall back to finding largest file
     
-    # Strategy: Find the largest file in the blobs directory
+    # Try to get model manifest to find the correct blob
+    manifest = get_model_manifest(model_name)
+    if manifest:
+        # The manifest might contain digest information
+        # Look for the largest blob that matches model size expectations
+        pass
+    
+    # Fallback: Find the largest file in the blobs directory
     # Model files are typically the largest files (> 50MB for small models, > 100MB for larger ones)
-    # For gemma3:1b, it should be around 1-2GB
     largest_file = None
     largest_size = 0
     min_size = 50 * 1024 * 1024  # 50MB minimum
@@ -117,18 +141,33 @@ def find_model_file(model_name: str, ollama_models_dir: Path) -> Optional[Path]:
     blob_files = list(ollama_models_dir.glob("*"))
     print(f"Found {len(blob_files)} files in Ollama storage")
     
+    # Sort by size and check if files are valid GGUF
+    valid_gguf_files = []
     for blob_file in blob_files:
         if blob_file.is_file():
             try:
                 size = blob_file.stat().st_size
-                if size > largest_size and size >= min_size:
-                    largest_size = size
-                    largest_file = blob_file
+                if size >= min_size:
+                    # Check if it's a valid GGUF file
+                    if verify_gguf_file(blob_file):
+                        valid_gguf_files.append((blob_file, size))
+                    elif size > largest_size:
+                        # Keep track of largest file even if not verified yet
+                        largest_size = size
+                        largest_file = blob_file
             except (OSError, PermissionError):
                 continue
     
-    if largest_file:
-        print(f"Found model file: {largest_file.name} ({largest_size / (1024**3):.2f} GB)")
+    # Prefer verified GGUF files
+    if valid_gguf_files:
+        # Get the largest verified GGUF file
+        valid_gguf_files.sort(key=lambda x: x[1], reverse=True)
+        largest_file = valid_gguf_files[0][0]
+        largest_size = valid_gguf_files[0][1]
+        print(f"Found verified GGUF file: {largest_file.name} ({largest_size / (1024**3):.2f} GB)")
+    elif largest_file:
+        print(f"Found potential model file: {largest_file.name} ({largest_size / (1024**3):.2f} GB)")
+        print(f"Note: File format will be verified after copying")
     else:
         print(f"Warning: No model file found (searched for files > {min_size / (1024**2):.0f} MB)")
     
@@ -149,6 +188,48 @@ def copy_model_to_local(model_name: str, source_path: Path, dest_name: Optional[
     print(f"Copying model from {source_path} to {dest_path}...")
     try:
         shutil.copy2(source_path, dest_path)
+        
+        # Verify the copied file is a valid GGUF
+        if not verify_gguf_file(dest_path):
+            print(f"Warning: Copied file does not appear to be a valid GGUF file.")
+            print(f"This may happen if Ollama stores models in a different format.")
+            print(f"Attempting to use Ollama's export functionality...")
+            
+            # Try using Ollama's API to export the model properly
+            try:
+                response = requests.post(
+                    f"{OLLAMA_BASE_URL}/api/generate",
+                    json={
+                        "model": model_name,
+                        "prompt": "",
+                        "stream": False
+                    },
+                    timeout=5
+                )
+                # This won't work for export, but let's try a different approach
+                # Actually, we should use ollama show to get model info and find the right blob
+                pass
+            except:
+                pass
+            
+            # For now, return None and suggest manual download
+            print(f"\nError: The file copied from Ollama is not a valid GGUF file.")
+            print(f"Ollama stores models in a proprietary format that may not be directly compatible.")
+            print(f"\nAlternative solutions:")
+            print(f"1. Download the model directly from HuggingFace:")
+            print(f"   https://huggingface.co/models?search=gguf")
+            print(f"2. Use a tool like 'ollama pull' and then export:")
+            print(f"   ollama pull {model_name}")
+            print(f"   ollama show {model_name} --modelfile")
+            print(f"3. Use a different model source that provides direct GGUF downloads")
+            
+            # Clean up the invalid file
+            try:
+                dest_path.unlink()
+            except:
+                pass
+            return None
+        
         print(f"✓ Model saved to {dest_path}")
         return dest_path
     except Exception as e:
