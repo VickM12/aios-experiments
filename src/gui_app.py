@@ -299,402 +299,56 @@ class TelemetryGUI:
         # Get current telemetry state
         current_data = self.telemetry_history[-1] if self.telemetry_history else None
         
-        # Simple AI responses based on keywords and context
-        message_lower = message.lower()
+        # Use LLM for all questions if available - it's smart enough to understand any question
         response = ""
         
-        if "cpu" in message_lower or "processor" in message_lower:
-            # Check if user wants detailed explanation
-            wants_details = any(word in message_lower for word in ['tell me', 'explain', 'more', 'detail', 'in detail', 'about', 'what', 'how', 'why', 'please'])
-            
-            if wants_details and self.llm_analyzer.is_available() and len(self.telemetry_history) > 0:
-                # Use LLM for detailed CPU explanation
-                try:
-                    analysis = None
-                    if len(self.telemetry_history) >= 10:
-                        analysis = self.analyzer.comprehensive_analysis(self.telemetry_history)
-                    response = self.llm_analyzer.answer_question(
-                        message,
-                        self.telemetry_history,
-                        analysis,
-                        self.system_info
-                    )
-                except Exception as e:
-                    # Fall back to basic info
-                    if current_data:
-                        cpu = current_data.get('cpu', {})
-                        cpu_percent = cpu.get('cpu_percent', 0)
-                        response = f"**CPU Status:**\n"
-                        response += f"- Current usage: {cpu_percent:.1f}%\n"
-                        response += f"- Status: {'High' if cpu_percent > 80 else 'Moderate' if cpu_percent > 50 else 'Normal'}\n"
-                        if cpu.get('cpu_freq', {}).get('current'):
-                            response += f"- Frequency: {cpu['cpu_freq']['current']:.0f} MHz\n"
-                        response += f"\n**Error:** Error getting LLM response: {str(e)}"
-                    else:
-                        response = "No telemetry data available. Please start monitoring first."
-            elif current_data:
-                cpu = current_data.get('cpu', {})
-                cpu_percent = cpu.get('cpu_percent', 0)
-                response = f"**CPU Status:**\n"
-                response += f"- Current usage: {cpu_percent:.1f}%\n"
-                response += f"- Status: {'High' if cpu_percent > 80 else 'Moderate' if cpu_percent > 50 else 'Normal'}\n"
-                if cpu.get('cpu_freq', {}).get('current'):
-                    response += f"- Frequency: {cpu['cpu_freq']['current']:.0f} MHz\n"
-                if wants_details and not self.llm_analyzer.is_available():
-                    response += f"\n*Note: For detailed explanations, make sure the LLM is available.*"
-                elif wants_details:
-                    response += f"\n*Tip: Ask 'Tell me more about the CPU' or 'Explain the CPU in detail' for LLM analysis.*"
-            else:
-                response = "No telemetry data available. Please start monitoring first."
-        
-        elif "memory" in message_lower or "ram" in message_lower:
-            if current_data:
-                mem = current_data.get('memory', {}).get('virtual_memory', {})
-                mem_percent = mem.get('percent', 0)
-                mem_gb = mem.get('used', 0) / (1024**3)
-                response = f"**Memory Status:**\n"
-                response += f"- Usage: {mem_percent:.1f}% ({mem_gb:.2f} GB used)\n"
-                response += f"- Status: {'High' if mem_percent > 80 else 'Moderate' if mem_percent > 50 else 'Normal'}\n"
-            else:
-                response = "No telemetry data available. Please start monitoring first."
-        
-        elif "network" in message_lower or "internet" in message_lower or "bandwidth" in message_lower:
-            if current_data:
-                network_io = current_data.get('network', {}).get('network_io', {})
-                if network_io:
-                    sent_mb = network_io.get('bytes_sent', 0) / (1024**2)
-                    recv_mb = network_io.get('bytes_recv', 0) / (1024**2)
-                    sent_gb = sent_mb / 1024
-                    recv_gb = recv_mb / 1024
-                    packets_sent = network_io.get('packets_sent', 0)
-                    packets_recv = network_io.get('packets_recv', 0)
-                    connections = current_data.get('network', {}).get('network_connections', 0)
-                    
-                    response = f"**Network Status:**\n"
-                    response += f"- Data sent: {sent_gb:.2f} GB ({sent_mb:.1f} MB)\n"
-                    response += f"- Data received: {recv_gb:.2f} GB ({recv_mb:.1f} MB)\n"
-                    response += f"- Packets sent: {packets_sent:,}\n"
-                    response += f"- Packets received: {packets_recv:,}\n"
-                    response += f"- Active connections: {connections}\n"
-                    if network_io.get('errin', 0) > 0 or network_io.get('errout', 0) > 0:
-                        response += f"- **Warning:** Errors: {network_io.get('errin', 0)} in, {network_io.get('errout', 0)} out\n"
-                else:
-                    response = "Network data not available."
-            else:
-                response = "No telemetry data available. Please start monitoring first."
-        
-        elif "power" in message_lower or "watt" in message_lower or "energy" in message_lower:
-            if current_data:
-                power_data = current_data.get('power', {})
-                if power_data:
-                    response = f"**Power Usage:**\n"
-                    
-                    # GPU power
-                    if power_data.get('gpu'):
-                        for i, gpu in enumerate(power_data['gpu']):
-                            if 'power_draw_watts' in gpu and gpu['power_draw_watts']:
-                                response += f"- GPU {i+1}: {gpu['power_draw_watts']:.1f}W\n"
-                    
-                    # CPU RAPL power
-                    if power_data.get('rapl'):
-                        for domain, pwr in power_data['rapl'].items():
-                            if 'package' in domain.lower():
-                                energy = pwr.get('energy_joules', 0)
-                                response += f"- CPU Package: {energy:.1f}J\n"
-                    
-                    if not power_data.get('gpu') and not power_data.get('rapl'):
-                        response += "Power monitoring not available on this system.\n"
-                else:
-                    response = "Power data not available."
-            else:
-                response = "No telemetry data available. Please start monitoring first."
-        
-        elif "battery" in message_lower:
-            # Check if user wants detailed explanation or optimization advice
-            wants_details = any(word in message_lower for word in ['tell me', 'explain', 'more', 'detail', 'in detail', 'about', 'what', 'how', 'why', 'optimize', 'optimization', 'improve', 'better', 'performance', 'please'])
-            
-            if wants_details and self.llm_analyzer.is_available() and len(self.telemetry_history) > 0:
-                # Use LLM for detailed battery explanation/optimization
-                try:
-                    analysis = None
-                    if len(self.telemetry_history) >= 10:
-                        analysis = self.analyzer.comprehensive_analysis(self.telemetry_history)
-                    response = self.llm_analyzer.answer_question(
-                        message,
-                        self.telemetry_history,
-                        analysis,
-                        self.system_info
-                    )
-                except Exception as e:
-                    # Fall back to basic info
-                    if current_data:
-                        battery_data = current_data.get('battery', {})
-                        if battery_data and 'error' not in battery_data:
-                            percent = battery_data.get('percent', 'N/A')
-                            plugged = battery_data.get('power_plugged', False)
-                            status = "Charging" if plugged else "Discharging"
-                            secsleft = battery_data.get('secsleft', None)
-                            
-                            response = f"**Battery Status:**\n"
-                            response += f"- Charge: {percent}%\n"
-                            response += f"- Status: {status}\n"
-                            if secsleft and secsleft != -1:
-                                hours = secsleft // 3600
-                                minutes = (secsleft % 3600) // 60
-                                response += f"- Time remaining: {hours}h {minutes}m\n"
-                            response += f"\n**Error:** Error getting LLM response: {str(e)}"
-                        else:
-                            response = "Battery data not available (system may not have a battery)."
-                    else:
-                        response = "No telemetry data available. Please start monitoring first."
-            elif current_data:
-                battery_data = current_data.get('battery', {})
-                if battery_data and 'error' not in battery_data:
-                    percent = battery_data.get('percent', 'N/A')
-                    plugged = battery_data.get('power_plugged', False)
-                    status = "Charging" if plugged else "Discharging"
-                    secsleft = battery_data.get('secsleft', None)
-                    
-                    response = f"**Battery Status:**\n"
-                    response += f"- Charge: {percent}%\n"
-                    response += f"- Status: {status}\n"
-                    if secsleft and secsleft != -1:
-                        hours = secsleft // 3600
-                        minutes = (secsleft % 3600) // 60
-                        response += f"- Time remaining: {hours}h {minutes}m\n"
-                    if wants_details and not self.llm_analyzer.is_available():
-                        response += f"\n*Note: For detailed explanations and optimization advice, make sure the LLM is available.*"
-                    elif wants_details:
-                        response += f"\n*Tip: Ask 'How can I optimize my battery performance?' or 'Explain battery optimization' for LLM analysis.*"
-                else:
-                    response = "Battery data not available (system may not have a battery)."
-            else:
-                response = "No telemetry data available. Please start monitoring first."
-        
-        elif "process" in message_lower or "processes" in message_lower or "top process" in message_lower or "what's using" in message_lower:
-            # Check if user wants detailed explanation
-            wants_details = any(word in message_lower for word in ['tell me', 'explain', 'more', 'detail', 'in detail', 'about', 'what', 'how', 'why'])
-            
-            if wants_details and self.llm_analyzer.is_available() and len(self.telemetry_history) > 0:
-                # Use LLM for detailed process explanation
-                try:
-                    analysis = None
-                    if len(self.telemetry_history) >= 10:
-                        analysis = self.analyzer.comprehensive_analysis(self.telemetry_history)
-                    response = self.llm_analyzer.answer_question(
-                        message,
-                        self.telemetry_history,
-                        analysis,
-                        self.system_info
-                    )
-                except Exception as e:
-                    # Fall back to basic info
-                    if current_data:
-                        process_data = current_data.get('processes', {})
-                        if process_data:
-                            total = process_data.get('total_processes', 0)
-                            top_processes = process_data.get('top_processes', [])[:10]
-                            response = f"**Process Information:**\n"
-                            response += f"- Total processes: {total}\n\n"
-                            response += f"**Top CPU-consuming processes:**\n"
-                            for i, proc in enumerate(top_processes, 1):
-                                proc_name = proc.get('name', 'unknown')
-                                proc_cpu = proc.get('cpu_percent', 0) or 0
-                                proc_mem = proc.get('memory_percent', 0) or 0
-                                proc_pid = proc.get('pid', 'N/A')
-                                if proc_cpu > 0 or proc_mem > 0.1:
-                                    response += f"{i}. {proc_name} (PID {proc_pid}): CPU {proc_cpu:.1f}%, Memory {proc_mem:.2f}%\n"
-                            response += f"\n**Error:** Error getting LLM response: {str(e)}"
-                        else:
-                            response = "Process data not available."
-                    else:
-                        response = "No telemetry data available. Please start monitoring first."
-            elif current_data:
-                process_data = current_data.get('processes', {})
-                if process_data:
-                    total = process_data.get('total_processes', 0)
-                    top_processes = process_data.get('top_processes', [])[:10]
-                    
-                    response = f"**Process Information:**\n"
-                    response += f"- Total processes: {total}\n\n"
-                    response += f"**Top CPU-consuming processes:**\n"
-                    for i, proc in enumerate(top_processes, 1):
-                        proc_name = proc.get('name', 'unknown')
-                        proc_cpu = proc.get('cpu_percent', 0) or 0
-                        proc_mem = proc.get('memory_percent', 0) or 0
-                        proc_pid = proc.get('pid', 'N/A')
-                        if proc_cpu > 0 or proc_mem > 0.1:
-                            response += f"{i}. {proc_name} (PID {proc_pid}): CPU {proc_cpu:.1f}%, Memory {proc_mem:.2f}%\n"
-                    if wants_details and not self.llm_analyzer.is_available():
-                        response += f"\n\n*Note: For detailed explanations, make sure the LLM is available.*"
-                    elif wants_details:
-                        response += f"\n\n*Tip: Ask 'Tell me more about the processes' or 'Explain the processes in detail' for LLM analysis.*"
-                else:
-                    response = "Process data not available."
-            else:
-                response = "No telemetry data available. Please start monitoring first."
-        
-        elif "anomaly" in message_lower or "problem" in message_lower or "issue" in message_lower or "anomalies" in message_lower:
-            if len(self.telemetry_history) >= 10:
-                try:
+        # Try LLM first if available and we have data
+        if self.llm_analyzer.is_available() and len(self.telemetry_history) > 0:
+            try:
+                # Get analysis for context
+                analysis = None
+                if len(self.telemetry_history) >= 10:
                     analysis = self.analyzer.comprehensive_analysis(self.telemetry_history)
-                    anomaly = analysis.get('anomaly_detection', {})
-                    if anomaly.get('anomalies_detected', 0) > 0:
-                        # Check if user wants detailed explanation (keywords like "tell", "explain", "more", "detail", "llm")
-                        wants_details = any(word in message_lower for word in ['tell', 'explain', 'more', 'detail', 'what', 'why', 'how', 'llm', 'about'])
-                        
-                        if wants_details and self.llm_analyzer.is_available():
-                            # Use LLM for detailed explanation
-                            try:
-                                llm_response = self.llm_analyzer.explain_anomalies(self.telemetry_history, analysis, self.system_info)
-                                if llm_response and str(llm_response).strip():
-                                    response = str(llm_response).strip()
-                                else:
-                                    # LLM returned empty, fall back to basic info
-                                    response = f"**Anomaly Detection:**\n"
-                                    response += f"- Found {anomaly['anomalies_detected']} anomalies ({anomaly.get('anomaly_percentage', 0):.1f}%)\n"
-                                    if anomaly.get('details'):
-                                        response += f"- Latest anomaly at index {anomaly['details'][-1]['index']}\n"
-                                    response += f"\n**Warning:** LLM returned empty response. Showing basic info."
-                            except Exception as e:
-                                response = f"**Anomaly Detection:**\n"
-                                response += f"- Found {anomaly['anomalies_detected']} anomalies ({anomaly.get('anomaly_percentage', 0):.1f}%)\n"
-                                if anomaly.get('details'):
-                                    response += f"- Latest anomaly at index {anomaly['details'][-1]['index']}\n"
-                                response += f"\n**Error:** Error getting LLM explanation: {str(e)}"
-                        else:
-                            # Basic anomaly info
-                            response = f"**Anomaly Detection:**\n"
-                            response += f"- Found {anomaly['anomalies_detected']} anomalies ({anomaly.get('anomaly_percentage', 0):.1f}%)\n"
-                            if anomaly.get('details'):
-                                response += f"- Latest anomaly at index {anomaly['details'][-1]['index']}\n"
-                            if self.llm_analyzer.is_available():
-                                response += f"\n*Tip: Ask 'Tell me more about the anomalies' or 'Explain the anomalies' for detailed LLM analysis.*"
-                            elif wants_details:
-                                response += f"\n*Note: LLM not available. For detailed explanations, make sure Ollama is running or set API keys.*"
-                    else:
-                        response = "**No anomalies detected.** System appears to be operating normally."
-                except Exception as e:
-                    response = f"Error analyzing anomalies: {str(e)}"
-            else:
-                response = "Need at least 10 data points for anomaly detection. Please collect more data."
+                
+                # Use LLM to answer the question with full context
+                response = self.llm_analyzer.answer_question(
+                    message,
+                    self.telemetry_history,
+                    analysis,
+                    self.system_info
+                )
+                # If we got a valid response, use it
+                if response and str(response).strip():
+                    # Update history and return
+                    history.append({"role": "user", "content": message})
+                    history.append({"role": "assistant", "content": response})
+                    return "", history
+            except Exception as e:
+                # LLM failed, fall through to basic responses
+                response = f"Error getting LLM response: {str(e)}\n\n"
         
-        elif "temperature" in message_lower or "temp" in message_lower:
-            if current_data:
-                temp_data = current_data.get('temperature', {})
-                if temp_data and 'error' not in temp_data:
-                    all_temps = []
-                    for sensor_name, entries in temp_data.items():
-                        for entry in entries:
-                            if 'current' in entry:
-                                all_temps.append(entry['current'])
-                    if all_temps:
-                        avg_temp = sum(all_temps) / len(all_temps)
-                        response = f"**Temperature Status:**\n"
-                        response += f"- Average: {avg_temp:.1f}°C\n"
-                        response += f"- Status: {'High' if avg_temp > 70 else 'Moderate' if avg_temp > 60 else 'Normal'}\n"
-                    else:
-                        response = "Temperature sensors not available."
-                else:
-                    response = "Temperature data not available."
-            else:
-                response = "No telemetry data available."
-        
-        elif "recommendation" in message_lower or "suggest" in message_lower or "advice" in message_lower:
-            if len(self.telemetry_history) >= 5:
-                analysis = self.analyzer.comprehensive_analysis(self.telemetry_history)
-                insights = analysis.get('performance_insights', {})
-                if insights.get('recommendations'):
-                    response = "**Recommendations:**\n"
-                    for rec in insights['recommendations']:
-                        response += f"- {rec}\n"
-                else:
-                    response = "**System is operating normally.** No recommendations at this time."
-            else:
-                response = "Please collect more data for recommendations."
-        
-        elif "summary" in message_lower or "overview" in message_lower or "status" in message_lower:
-            if current_data:
-                cpu = current_data.get('cpu', {}).get('cpu_percent', 0)
-                mem = current_data.get('memory', {}).get('virtual_memory', {}).get('percent', 0)
-                disk = current_data.get('disk', {}).get('disk_usage', {}).get('percent', 0)
-                response = f"**System Status Summary:**\n"
-                response += f"- CPU: {cpu:.1f}%\n"
-                response += f"- Memory: {mem:.1f}%\n"
-                response += f"- Disk: {disk:.1f}%\n"
-                response += f"- Data points collected: {len(self.telemetry_history)}\n"
-            else:
-                response = "No data available. Start monitoring to see status."
-        
+        # Fallback to basic responses if LLM not available, failed, or no data
+        if not current_data:
+            if not response:
+                response = "No telemetry data available. Please start monitoring first."
+            if not self.llm_analyzer.is_available():
+                response += "\n\n*Note: For detailed AI responses, configure an LLM provider in Settings.*"
         else:
-            # For general questions, try using LLM if available
-            if self.llm_analyzer.is_available() and len(self.telemetry_history) > 0:
-                try:
-                    # Get analysis for context
-                    analysis = None
-                    if len(self.telemetry_history) >= 10:
-                        analysis = self.analyzer.comprehensive_analysis(self.telemetry_history)
-                    
-                    # Use LLM to answer the question with full context
-                    response = self.llm_analyzer.answer_question(
-                        message,
-                        self.telemetry_history,
-                        analysis,
-                        self.system_info
-                    )
-                except Exception as e:
-                    response = f"I encountered an error: {str(e)}\n\n"
-                    response += "I can help you with:\n"
-                    response += "- CPU status and usage\n"
-                    response += "- Memory/RAM information\n"
-                    response += "- Temperature monitoring\n"
-                    response += "- Anomaly detection\n"
-                    response += "- System recommendations\n"
-                    response += "- Overall system status"
-            else:
-                # Check for common question patterns that should use LLM
-                llm_keywords = ['tell me', 'explain', 'why', 'how', 'what is', 'what are', 'describe', 'analyze', 'llm']
-                if any(keyword in message_lower for keyword in llm_keywords) and len(self.telemetry_history) > 0:
-                    if self.llm_analyzer.is_available():
-                        try:
-                            analysis = None
-                            if len(self.telemetry_history) >= 10:
-                                analysis = self.analyzer.comprehensive_analysis(self.telemetry_history)
-                            response = self.llm_analyzer.answer_question(
-                                message,
-                                self.telemetry_history,
-                                analysis
-                            )
-                        except Exception as e:
-                            response = f"Error using LLM: {str(e)}\n\n"
-                            response += "I can help you with:\n"
-                            response += "- CPU status and usage\n"
-                            response += "- Memory/RAM information\n"
-                            response += "- Temperature monitoring\n"
-                            response += "- Anomaly detection\n"
-                            response += "- System recommendations\n"
-                            response += "- Overall system status"
-                    else:
-                        response = "I can help you with:\n"
-                        response += "- CPU status and usage\n"
-                        response += "- Memory/RAM information\n"
-                        response += "- Temperature monitoring\n"
-                        response += "- Anomaly detection\n"
-                        response += "- System recommendations\n"
-                        response += "- Overall system status\n\n"
-                        response += "*Note: For more detailed AI responses, make sure Ollama is running or set API keys.*\n\n"
-                        response += "Try asking: 'What's my CPU usage?' or 'Are there any anomalies?'"
-                else:
-                    response = "I can help you with:\n"
-                    response += "- CPU status and usage\n"
-                    response += "- Memory/RAM information\n"
-                    response += "- Temperature monitoring\n"
-                    response += "- Anomaly detection\n"
-                    response += "- System recommendations\n"
-                    response += "- Overall system status\n\n"
-                    if not self.llm_analyzer.is_available():
-                        response += "*Note: For more detailed AI responses, make sure Ollama is running or set API keys.*\n\n"
-                    response += "Try asking: 'What's my CPU usage?' or 'Are there any anomalies?'"
+            # Provide a simple fallback message
+            if not response:
+                response = "I can help you with questions about your system telemetry. "
+                response += "For detailed responses, please configure an LLM provider in Settings."
+        
+        # If we still don't have a response, provide a helpful message
+        if not response or not response.strip():
+            response = "I can help you with questions about your system telemetry. "
+            if not self.llm_analyzer.is_available():
+                response += "For detailed AI responses, please configure an LLM provider in Settings."
+            elif len(self.telemetry_history) == 0:
+                response += "Please start monitoring to collect telemetry data."
+        
+        # All topic-specific handlers removed - LLM handles everything intelligently
+        # The old keyword-based handlers were removed because the LLM can understand any question
         
         # Ensure response is always a string (never None)
         if response is None:
