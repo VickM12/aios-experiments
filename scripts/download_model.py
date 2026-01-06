@@ -419,23 +419,23 @@ def download_model(model_name: str = "gemma3:1b", save_name: Optional[str] = Non
             
             # Check if model is available
             available_models = get_ollama_models()
-        if model_name not in available_models:
-            print(f"Model '{model_name}' not found in Ollama.")
-            print(f"Available models: {', '.join(available_models) if available_models else 'None'}")
-            print(f"\nPulling model from Ollama API...")
-            if not pull_model(model_name):
-                if source == "auto":
-                    print(f"\n⚠️  Failed to pull from Ollama, falling back to HuggingFace...\n")
-                    return download_from_huggingface(model_name, save_name)
-                return None
-            # Refresh list
-            available_models = get_ollama_models()
             if model_name not in available_models:
-                if source == "auto":
-                    print(f"\n⚠️  Model still not available, falling back to HuggingFace...\n")
-                    return download_from_huggingface(model_name, save_name)
-                print(f"Error: Model '{model_name}' still not available after pulling")
-                return None
+                print(f"Model '{model_name}' not found in Ollama.")
+                print(f"Available models: {', '.join(available_models) if available_models else 'None'}")
+                print(f"\nPulling model from Ollama API...")
+                if not pull_model(model_name):
+                    if source == "auto":
+                        print(f"\n⚠️  Failed to pull from Ollama, falling back to HuggingFace...\n")
+                        return download_from_huggingface(model_name, save_name)
+                    return None
+                # Refresh list
+                available_models = get_ollama_models()
+                if model_name not in available_models:
+                    if source == "auto":
+                        print(f"\n⚠️  Model still not available, falling back to HuggingFace...\n")
+                        return download_from_huggingface(model_name, save_name)
+                    print(f"Error: Model '{model_name}' still not available after pulling")
+                    return None
         
         # Find model file in Ollama storage (only works if Ollama is local)
         # For remote Ollama servers, we can't access the blob storage
@@ -475,10 +475,6 @@ def download_model(model_name: str = "gemma3:1b", save_name: Optional[str] = Non
             print(f"⚠️  Remote Ollama server detected: {OLLAMA_BASE_URL}")
             print(f"Cannot access blob storage on remote server.")
             print(f"Falling back to HuggingFace download...\n")
-            return download_from_huggingface(model_name, save_name)
-        else:
-            # Direct HuggingFace download (source == "huggingface" already handled above)
-            # This shouldn't be reached, but just in case
             return download_from_huggingface(model_name, save_name)
     finally:
         # Restore original URL
