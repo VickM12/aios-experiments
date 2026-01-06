@@ -1504,9 +1504,9 @@ class TelemetryGUI:
                                 with gr.Row():
                                     gr.Markdown("")  # Spacer (no scale parameter)
                                     with gr.Row(scale=1):
-                                        prev_page_btn = gr.Button("", variant="secondary", scale=1, min_width=12, elem_classes=["icon-chevron-left"])
+                                        prev_page_btn = gr.Button("", variant="secondary", scale=1, min_width=32, interactive=True, elem_classes=["icon-chevron-left"])
                                         page_info = gr.Markdown("Page 1", elem_classes=["text-center"])
-                                        next_page_btn = gr.Button("", variant="secondary", scale=1, min_width=8, elem_classes=["icon-chevron-right"])
+                                        next_page_btn = gr.Button("", variant="secondary", scale=1, min_width=32, interactive=True, elem_classes=["icon-chevron-right"])
                             
                             with gr.Column(scale=1):
                                 with gr.Row():
@@ -1548,22 +1548,30 @@ class TelemetryGUI:
                         
                         def go_to_prev_page():
                             """Go to previous page"""
-                            # Auto-load if table is empty (first interaction)
-                            if full_table_data[0] is None:
+                            try:
+                                # Auto-load if table is empty (first interaction)
+                                if full_table_data[0] is None:
+                                    return load_page(1)
+                                if current_page[0] > 1:
+                                    return load_page(current_page[0] - 1)
+                                return load_page(current_page[0])
+                            except Exception as e:
+                                # If error, try to load first page
                                 return load_page(1)
-                            if current_page[0] > 1:
-                                return load_page(current_page[0] - 1)
-                            return load_page(current_page[0])
                         
                         def go_to_next_page():
                             """Go to next page"""
-                            # Auto-load if table is empty (first interaction)
-                            if full_table_data[0] is None:
+                            try:
+                                # Auto-load if table is empty (first interaction)
+                                if full_table_data[0] is None:
+                                    return load_page(1)
+                                total_pages = (total_sessions_count[0] + page_size - 1) // page_size if total_sessions_count[0] > 0 else 1
+                                if current_page[0] < total_pages:
+                                    return load_page(current_page[0] + 1)
+                                return load_page(current_page[0])
+                            except Exception as e:
+                                # If error, try to load first page
                                 return load_page(1)
-                            total_pages = (total_sessions_count[0] + page_size - 1) // page_size if total_sessions_count[0] > 0 else 1
-                            if current_page[0] < total_pages:
-                                return load_page(current_page[0] + 1)
-                            return load_page(current_page[0])
                         
                         # Pagination button handlers
                         prev_page_btn.click(
@@ -1589,6 +1597,9 @@ class TelemetryGUI:
                             inputs=None,
                             outputs=[sessions_table, sessions_summary, page_info, prev_page_btn, next_page_btn]
                         )
+                        
+                        # Also trigger load when pagination buttons are first clicked (fallback for Windows/Chrome)
+                        # The buttons will auto-load if data is None, so this handles the case where app.load doesn't fire
                         
                         # Handle row click to show details
                         def show_session_details(evt: gr.SelectData):
