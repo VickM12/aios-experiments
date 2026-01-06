@@ -315,11 +315,11 @@ def find_model_file(model_name: str, ollama_models_dir: Path) -> Optional[Path]:
         largest_file = valid_gguf_files[0][0]
         largest_size = valid_gguf_files[0][1]
         print(f"Found verified GGUF file: {largest_file.name} ({largest_size / (1024**3):.2f} GB)")
-                        print(f"[WARNING] Using size-based selection - this may not be the correct file for '{model_name}'")
+        print(f"[WARNING] Using size-based selection - this may not be the correct file for '{model_name}'")
         print(f"   If this is wrong, try downloading from HuggingFace instead.")
     elif largest_file:
         print(f"Found potential model file: {largest_file.name} ({largest_size / (1024**3):.2f} GB)")
-                        print(f"[WARNING] File not verified as GGUF and may not be correct for '{model_name}'")
+        print(f"[WARNING] File not verified as GGUF and may not be correct for '{model_name}'")
         print(f"   File format will be verified after copying.")
     else:
         print(f"Warning: No model file found (searched for files > {min_size / (1024**2):.0f} MB)")
