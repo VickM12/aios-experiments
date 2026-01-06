@@ -37,3 +37,4 @@ models/*.pth
 
 # Configuration
 config.json
+*.csv

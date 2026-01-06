@@ -7,8 +7,10 @@ import gradio as gr
 import json
 import threading
 import time
+import csv
 from datetime import datetime
 from typing import List, Dict, Any, Tuple, Optional
+from pathlib import Path
 from .telemetry_collector import TelemetryCollector
 from .ai_analyzer import TelemetryAnalyzer
 from .visualizer import TelemetryVisualizer
@@ -1073,32 +1075,68 @@ class TelemetryGUI:
         
         return result
     
-    def list_archived_sessions(self):
-        """List all archived sessions"""
+    def list_archived_sessions(self, limit: int = 50, offset: int = 0):
+        """List archived sessions with pagination - returns DataFrame, summary, and total count"""
         if not self.archive:
-            return "Archiving is not enabled."
+            return pd.DataFrame(), "Archiving is not enabled.", 0
         
-        sessions = self.archive.query_sessions()
-        if not sessions:
-            return "No archived sessions found."
+        # Store full sessions list for row click handling
+        self._current_sessions_df = None
         
-        result = "## <i class='fas fa-list' style='margin-right: 6px;'></i> Archived Sessions\n\n"
-        result += f"Total: {len(sessions)} sessions\n\n"
+        # Query all sessions (ordered by start_time DESC to get latest first)
+        all_sessions = self.archive.query_sessions(
+            start_time=None,
+            end_time=None,
+            min_anomalies=None
+        )
         
-        for session in sessions[:20]:  # Show last 20
-            result += f"### {session['session_id']}\n"
-            result += f"- **Start:** {session['start_time']}\n"
-            result += f"- **End:** {session['end_time']}\n"
-            result += f"- **Data Points:** {session['data_points']}\n"
-            result += f"- **Anomalies:** {session['anomaly_count']}\n\n"
+        if not all_sessions:
+            return pd.DataFrame(), "No archived sessions found.", 0
         
-        if len(sessions) > 20:
-            result += f"\n*Showing 20 of {len(sessions)} sessions*\n"
+        # Get correlated event counts for all sessions
+        all_session_ids = [s['session_id'] for s in all_sessions]
+        correlation_counts = self.archive.get_correlated_events_counts(all_session_ids)
         
-        return result
+        # Create DataFrame with session data including checkbox column
+        table_data = []
+        for session in all_sessions:
+            session_id = session['session_id']
+            correlation_count = correlation_counts.get(session_id, 0)
+            start_time_str = session['start_time']
+            # Extract just the date part for display
+            try:
+                date_display = datetime.fromisoformat(start_time_str.replace('Z', '+00:00')).strftime('%Y-%m-%d')
+            except:
+                date_display = start_time_str[:10] if len(start_time_str) >= 10 else start_time_str
+            
+            table_data.append({
+                'Select': False,  # Checkbox column for export selection
+                'Session ID': session_id,
+                'Date': date_display,
+                'Data Points': session['data_points'],
+                'Anomalies': session['anomaly_count'],
+                'Log Correlations': correlation_count
+            })
+        
+        # Create full DataFrame
+        full_df = pd.DataFrame(table_data)
+        
+        # Apply pagination
+        total_count = len(full_df)
+        paginated_df = full_df.iloc[offset:offset + limit].copy()
+        
+        # Store the full DataFrame for row click handling
+        self._current_sessions_df = paginated_df.copy()
+        
+        # Create summary text
+        start_idx = offset + 1 if total_count > 0 else 0
+        end_idx = min(offset + limit, total_count)
+        summary = f"**Showing {start_idx}-{end_idx} of {total_count} sessions**"
+        
+        return paginated_df, summary, total_count
     
-    def query_archived_session(self, session_id: str):
-        """Query a specific archived session"""
+    def query_archived_session(self, session_id: str, show_telemetry: bool = True):
+        """Query a specific archived session - always shows all telemetry data"""
         if not self.archive:
             return "Archiving is not enabled."
         
@@ -1113,6 +1151,42 @@ class TelemetryGUI:
         result += f"**Start Time:** {session.get('start_time')}\n"
         result += f"**End Time:** {session.get('end_time')}\n"
         result += f"**Data Points:** {len(session.get('telemetry_data', []))}\n\n"
+        
+        # Always show all telemetry data
+        telemetry_data = session.get('telemetry_data', [])
+        if telemetry_data:
+            result += f"### <i class='fas fa-database' style='margin-right: 6px;'></i> Telemetry Data ({len(telemetry_data)} points)\n\n"
+            # Show summary statistics for key metrics
+            if len(telemetry_data) > 0:
+                # Calculate averages for key metrics
+                cpu_values = [d.get('cpu', {}).get('cpu_percent', 0) for d in telemetry_data if d.get('cpu', {}).get('cpu_percent')]
+                mem_values = [d.get('memory', {}).get('virtual_memory', {}).get('percent', 0) for d in telemetry_data if d.get('memory', {}).get('virtual_memory', {}).get('percent')]
+                
+                if cpu_values:
+                    result += f"**CPU Usage:**\n"
+                    result += f"- Average: {sum(cpu_values) / len(cpu_values):.1f}%\n"
+                    result += f"- Min: {min(cpu_values):.1f}%, Max: {max(cpu_values):.1f}%\n\n"
+                
+                if mem_values:
+                    result += f"**Memory Usage:**\n"
+                    result += f"- Average: {sum(mem_values) / len(mem_values):.1f}%\n"
+                    result += f"- Min: {min(mem_values):.1f}%, Max: {max(mem_values):.1f}%\n\n"
+                
+                # Show all data points in a table format
+                result += f"**All Data Points:**\n\n"
+                result += "| # | Timestamp | CPU % | Memory % | Disk % |\n"
+                result += "|---|-----------|-------|----------|--------|\n"
+                for i, data_point in enumerate(telemetry_data, 1):
+                    timestamp = data_point.get('timestamp', 'N/A')
+                    cpu = data_point.get('cpu', {}).get('cpu_percent', 'N/A')
+                    mem = data_point.get('memory', {}).get('virtual_memory', {}).get('percent', 'N/A')
+                    disk = data_point.get('disk', {}).get('disk_usage', {}).get('percent', 'N/A')
+                    # Format values
+                    cpu_str = f"{cpu:.1f}" if isinstance(cpu, (int, float)) else str(cpu)
+                    mem_str = f"{mem:.1f}" if isinstance(mem, (int, float)) else str(mem)
+                    disk_str = f"{disk:.1f}" if isinstance(disk, (int, float)) else str(disk)
+                    result += f"| {i} | {timestamp} | {cpu_str} | {mem_str} | {disk_str} |\n"
+                result += "\n"
         
         # Show analysis summary if available
         analysis = session.get('analysis', {})
@@ -1135,6 +1209,144 @@ class TelemetryGUI:
             result += "No correlated log events found.\n"
         
         return result
+    
+    def export_session(self, session_id: str, format_type: str = "json") -> str:
+        """Export a single session to CSV or JSON"""
+        if not self.archive:
+            return "Archiving is not enabled."
+        
+        if not session_id or not session_id.strip():
+            return "Please enter a session ID."
+        
+        session = self.archive.load_session(session_id.strip())
+        if not session:
+            return f"Session '{session_id}' not found."
+        
+        telemetry_data = session.get('telemetry_data', [])
+        if not telemetry_data:
+            return f"Session '{session_id}' has no telemetry data to export."
+        
+        try:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"{session_id}_{timestamp}.{format_type}"
+            filepath = Path(filename)
+            
+            if format_type == "csv":
+                # Flatten and export to CSV
+                all_keys = set()
+                for data in telemetry_data:
+                    all_keys.update(self._flatten_dict(data).keys())
+                
+                with open(filepath, 'w', newline='') as f:
+                    writer = csv.DictWriter(f, fieldnames=sorted(all_keys))
+                    writer.writeheader()
+                    for data in telemetry_data:
+                        flat_data = self._flatten_dict(data)
+                        writer.writerow(flat_data)
+            else:  # JSON
+                with open(filepath, 'w') as f:
+                    json.dump(session, f, indent=2, default=str)
+            
+            return f"**Export successful!**\n\nExported {len(telemetry_data)} data points to: `{filename}`"
+        except Exception as e:
+            return f"**Export failed:** {str(e)}"
+    
+    def export_selected_sessions(self, table_data, format_type: str = "json") -> Tuple[str, Optional[str]]:
+        """Export selected sessions from table (where Select=True) to CSV or JSON - returns (status_message, file_path)"""
+        if not self.archive:
+            return "Archiving is not enabled.", None
+        
+        # Handle DataFrame input - get rows where Select column is True
+        if isinstance(table_data, pd.DataFrame):
+            if table_data.empty:
+                return "Please select at least one session to export (check the 'Select' column).", None
+            
+            # Filter rows where Select is True
+            if 'Select' in table_data.columns:
+                selected_rows = table_data[table_data['Select'] == True]
+                if selected_rows.empty:
+                    return "Please check the 'Select' column for sessions you want to export.", None
+                session_ids = selected_rows['Session ID'].tolist()
+            else:
+                # Fallback: if no Select column, export all visible rows
+                if 'Session ID' in table_data.columns:
+                    session_ids = table_data['Session ID'].tolist()
+                else:
+                    return "Invalid table format.", None
+        else:
+            return "Invalid selection format.", None
+        
+        exported = []
+        failed = []
+        all_telemetry = []
+        
+        for session_id in session_ids:
+            session = self.archive.load_session(session_id)
+            if session:
+                telemetry_data = session.get('telemetry_data', [])
+                if telemetry_data:
+                    all_telemetry.extend(telemetry_data)
+                    exported.append(session_id)
+                else:
+                    failed.append(f"{session_id} (no data)")
+            else:
+                failed.append(f"{session_id} (not found)")
+        
+        if not all_telemetry:
+            return f"**No data to export.**\n\nFailed sessions: {', '.join(failed) if failed else 'None'}", None
+        
+        try:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"exported_sessions_{timestamp}.{format_type}"
+            filepath = Path(filename)
+            
+            if format_type == "csv":
+                # Flatten and export to CSV
+                all_keys = set()
+                for data in all_telemetry:
+                    all_keys.update(self._flatten_dict(data).keys())
+                
+                with open(filepath, 'w', newline='') as f:
+                    writer = csv.DictWriter(f, fieldnames=sorted(all_keys))
+                    writer.writeheader()
+                    for data in all_telemetry:
+                        flat_data = self._flatten_dict(data)
+                        writer.writerow(flat_data)
+            else:  # JSON
+                export_data = {
+                    'export_timestamp': datetime.now().isoformat(),
+                    'sessions_exported': exported,
+                    'total_data_points': len(all_telemetry),
+                    'telemetry_data': all_telemetry
+                }
+                with open(filepath, 'w') as f:
+                    json.dump(export_data, f, indent=2, default=str)
+            
+            result = f"**Export successful!**\n\n"
+            result += f"Exported {len(exported)} sessions with {len(all_telemetry)} total data points\n"
+            result += f"File: `{filename}`\n\n"
+            if failed:
+                result += f"**Failed sessions:** {', '.join(failed)}"
+            
+            return result, str(filepath.absolute())
+        except Exception as e:
+            return f"**Export failed:** {str(e)}", None
+    
+    def _flatten_dict(self, d: Dict, parent_key: str = '', sep: str = '_') -> Dict:
+        """Flatten nested dictionary for CSV export"""
+        items = []
+        for k, v in d.items():
+            new_key = f"{parent_key}{sep}{k}" if parent_key else k
+            if isinstance(v, dict):
+                items.extend(self._flatten_dict(v, new_key, sep=sep).items())
+            elif isinstance(v, list):
+                if v and isinstance(v[0], dict):
+                    items.extend(self._flatten_dict(v[0], new_key, sep=sep).items())
+                else:
+                    items.append((new_key, str(v)))
+            else:
+                items.append((new_key, v))
+        return dict(items)
     
     def get_archive_stats(self):
         """Get archive statistics"""
@@ -1203,11 +1415,47 @@ class TelemetryGUI:
         .icon-sync::before { content: "\\f021"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
         .icon-search::before { content: "\\f002"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
         .icon-brain::before { content: "\\f5dc"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
-        .icon-save::before { content: "\\f0c7"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
+        .icon-save::before { 
+            content: "\\f0c7"; 
+            font-family: "Font Awesome 6 Free"; 
+            font-weight: 900; 
+            margin-right: 6px; 
+            display: inline !important;
+            vertical-align: middle;
+        }
+        button.icon-save {
+            display: inline-flex !important;
+            align-items: center !important;
+        }
         .icon-check-circle::before { content: "\\f058"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
         .icon-paper-plane::before { content: "\\f1d8"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
         .icon-list::before { content: "\\f03a"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
         .icon-chart-pie::before { content: "\\f200"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
+        .icon-chevron-left::before { content: "\\f053"; font-family: "Font Awesome 6 Free"; font-weight: 900; }
+        .icon-chevron-right::before { content: "\\f054"; font-family: "Font Awesome 6 Free"; font-weight: 900; }
+        .icon-times::before { content: "\\f00d"; font-family: "Font Awesome 6 Free"; font-weight: 900; }
+        
+        /* Make pagination and close buttons narrower */
+        button.icon-chevron-left, button.icon-chevron-right, button.icon-times {
+            min-width: 24px !important;
+            width: 24px !important;
+            max-width: 24px !important;
+            padding: 4px 2px !important;
+        }
+        
+        /* Make export button narrower */
+        button.icon-save {
+            min-width: 80px !important;
+            max-width: 100px !important;
+        }
+        
+        /* Compact radio buttons - bring them closer to export button */
+        .compact-radio {
+            margin-left: 8px !important;
+        }
+        .compact-radio .wrap {
+            gap: 4px !important;
+        }
         
         /* Add icons to tabs using JavaScript-injected classes */
         .tab-icon-welcome::before { content: "\\f4ad"; font-family: "Font Awesome 6 Free"; font-weight: 900; margin-right: 6px; }
@@ -1549,42 +1797,247 @@ class TelemetryGUI:
                         gr.Markdown("View and query archived telemetry sessions with system log correlations")
                         
                         with gr.Row():
-                            with gr.Column(scale=1):
-                                gr.Markdown("### Archive Management")
-                                list_sessions_btn = gr.Button("List All Sessions", variant="primary", elem_classes=["icon-list"])
-                                archive_stats_btn = gr.Button("Archive Statistics", variant="secondary", elem_classes=["icon-chart-pie"])
-                                sessions_output = gr.Markdown()
+                            with gr.Column(scale=2):
+                                # Toolbar for actions
+                                with gr.Row():
+                                    archive_stats_btn = gr.Button("Archive Statistics", variant="secondary", elem_classes=["icon-chart-pie"])
+                                
+                                # Consolidated export section above table
+                                with gr.Row():
+                                    export_selected_btn = gr.Button("Export", variant="primary", elem_classes=["icon-save"], scale=1, min_width=80)
+                                    export_format = gr.Radio(
+                                        choices=["json", "csv"],
+                                        value="json",
+                                        label="Format",
+                                        scale=1,
+                                        container=False,
+                                        elem_classes=["compact-radio"]
+                                    )
+                                    export_file = gr.File(
+                                        label="",
+                                        visible=False,
+                                        scale=1
+                                    )
+                                export_output = gr.Markdown(visible=False)
+                                
+                                # Session table
+                                sessions_summary = gr.Markdown()
+                                sessions_table = gr.Dataframe(
+                                    label="Archived Sessions (Click a row to view details, use column headers to sort)",
+                                    headers=["Select", "Session ID", "Date", "Data Points", "Anomalies", "Log Correlations"],
+                                    datatype=["bool", "str", "str", "number", "number", "number"],
+                                    interactive=True,  # Required for checkbox column to work
+                                    wrap=True,
+                                    row_count=(10, "dynamic"),
+                                    col_count=(6, "fixed"),
+                                    type="pandas"
+                                )
+                                
+                                # Note: Gradio Dataframe doesn't support per-column interactivity
+                                # We keep interactive=True to allow checkbox selection in the "Select" column
+                                # Other columns are read-only by default (users can't edit non-bool columns easily)
+                                
+                                # Spacer between table and pagination
+                                gr.Markdown("")  # Spacer (no scale parameter)
+                                # Pagination controls - bottom right
+                                with gr.Row():
+                                    gr.Markdown("")  # Spacer (no scale parameter)
+                                    with gr.Row(scale=1):
+                                        prev_page_btn = gr.Button("", variant="secondary", scale=1, min_width=12, elem_classes=["icon-chevron-left"])
+                                        page_info = gr.Markdown("Page 1", elem_classes=["text-center"])
+                                        next_page_btn = gr.Button("", variant="secondary", scale=1, min_width=8, elem_classes=["icon-chevron-right"])
                             
                             with gr.Column(scale=1):
-                                gr.Markdown("### Query Session")
-                                session_id_input = gr.Textbox(
-                                    label="Session ID",
-                                    placeholder="e.g., session_20260103_141413",
-                                    lines=1
-                                )
-                                query_session_btn = gr.Button("Query Session", variant="primary", elem_classes=["icon-search"])
+                                with gr.Row():
+                                    gr.Markdown("### Session Details")
+                                    close_details_btn = gr.Button("", variant="secondary", scale=1, min_width=12, visible=False, elem_classes=["icon-times"])
+                                gr.Markdown("*Click a row in the table to view session details*")
                                 session_output = gr.Markdown()
                         
                         # Archive button actions
-                        list_sessions_btn.click(
-                            fn=self.list_archived_sessions,
+                        # Store reference to full table for row click handling
+                        full_table_data = [None]  # Use list to allow modification in nested functions
+                        current_page = [1]  # Track current page (1-indexed)
+                        page_size = 50  # Records per page
+                        total_sessions_count = [0]  # Track total count
+                        
+                        def load_page(page_num: int):
+                            """Load a specific page of sessions"""
+                            offset = (page_num - 1) * page_size
+                            df, summary, total = self.list_archived_sessions(limit=page_size, offset=offset)
+                            full_table_data[0] = df.copy() if isinstance(df, pd.DataFrame) and not df.empty else None
+                            total_sessions_count[0] = total
+                            current_page[0] = page_num
+                            
+                            # Calculate page info
+                            total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+                            page_info_text = f"**Page {page_num} of {total_pages}**"
+                            
+                            # Update button states
+                            prev_disabled = page_num <= 1
+                            next_disabled = page_num >= total_pages
+                            
+                            return (
+                                df,
+                                summary,
+                                page_info_text,
+                                gr.update(interactive=not prev_disabled),
+                                gr.update(interactive=not next_disabled)
+                            )
+                        
+                        def go_to_prev_page():
+                            """Go to previous page"""
+                            # Auto-load if table is empty (first interaction)
+                            if full_table_data[0] is None:
+                                return load_page(1)
+                            if current_page[0] > 1:
+                                return load_page(current_page[0] - 1)
+                            return load_page(current_page[0])
+                        
+                        def go_to_next_page():
+                            """Go to next page"""
+                            # Auto-load if table is empty (first interaction)
+                            if full_table_data[0] is None:
+                                return load_page(1)
+                            total_pages = (total_sessions_count[0] + page_size - 1) // page_size if total_sessions_count[0] > 0 else 1
+                            if current_page[0] < total_pages:
+                                return load_page(current_page[0] + 1)
+                            return load_page(current_page[0])
+                        
+                        # Pagination button handlers
+                        prev_page_btn.click(
+                            fn=go_to_prev_page,
                             inputs=None,
-                            outputs=sessions_output
+                            outputs=[sessions_table, sessions_summary, page_info, prev_page_btn, next_page_btn]
                         )
+                        next_page_btn.click(
+                            fn=go_to_next_page,
+                            inputs=None,
+                            outputs=[sessions_table, sessions_summary, page_info, prev_page_btn, next_page_btn]
+                        )
+                        
+                        # Auto-load first page on app load using app.load event
+                        def init_archive_data():
+                            """Initialize archive with first page"""
+                            return load_page(1)
+                        
+                        # Add app.load event for archive initialization
+                        # This will be called when the app loads
+                        app.load(
+                            fn=init_archive_data,
+                            inputs=None,
+                            outputs=[sessions_table, sessions_summary, page_info, prev_page_btn, next_page_btn]
+                        )
+                        
+                        # Handle row click to show details
+                        def show_session_details(evt: gr.SelectData):
+                            """Show session details when row is clicked"""
+                            if evt is None:
+                                return "", gr.update(visible=False)
+                            
+                            try:
+                                # Get row index from the select event
+                                row_idx = evt.index[0] if hasattr(evt, 'index') and evt.index and len(evt.index) > 0 else None
+                                
+                                if row_idx is not None and full_table_data[0] is not None:
+                                    # Get session ID from the stored full table
+                                    if len(full_table_data[0]) > row_idx:
+                                        session_id = full_table_data[0].iloc[row_idx]['Session ID']
+                                        details = self.query_archived_session(session_id, show_telemetry=True)
+                                        return details, gr.update(visible=True)
+                                
+                                # Fallback: try to get from evt.value
+                                if hasattr(evt, 'value') and evt.value is not None:
+                                    if isinstance(evt.value, pd.DataFrame) and len(evt.value) > 0:
+                                        session_id = evt.value.iloc[0]['Session ID']
+                                        details = self.query_archived_session(session_id, show_telemetry=True)
+                                        return details, gr.update(visible=True)
+                                
+                                return "", gr.update(visible=False)
+                            except Exception as e:
+                                return f"Error loading session: {str(e)}", gr.update(visible=False)
+                        
+                        # Handle row selection via select event (click on row, not header)
+                        def on_table_select(evt: gr.SelectData):
+                            """Handle row click - only if not clicking header"""
+                            # Check if clicking on a data row (index[0] >= 0 means data row, -1 or None means header)
+                            if evt and hasattr(evt, 'index') and evt.index:
+                                row_idx = evt.index[0]
+                                if row_idx is not None and row_idx >= 0:
+                                    return show_session_details(evt)
+                            return "", gr.update(visible=False)
+                        
+                        try:
+                            sessions_table.select(
+                                fn=on_table_select,
+                                outputs=[session_output, close_details_btn]
+                            )
+                        except:
+                            # Fallback: if select doesn't work, we'll handle it differently
+                            pass
+                        
+                        # Close details button
+                        def close_details():
+                            """Close the session details view"""
+                            return "", gr.update(visible=False)
+                        
+                        close_details_btn.click(
+                            fn=close_details,
+                            inputs=None,
+                            outputs=[session_output, close_details_btn]
+                        )
+                        # Archive stats button
+                        def get_stats():
+                            """Get archive stats"""
+                            stats = self.get_archive_stats()
+                            # Keep current table state
+                            current_df = full_table_data[0] if full_table_data[0] is not None else pd.DataFrame()
+                            total_pages = (total_sessions_count[0] + page_size - 1) // page_size if total_sessions_count[0] > 0 else 1
+                            page_info_text = f"**Page {current_page[0]} of {total_pages}**" if total_sessions_count[0] > 0 else "Page 1"
+                            prev_disabled = current_page[0] <= 1
+                            next_disabled = current_page[0] >= total_pages
+                            return (
+                                current_df,
+                                stats,
+                                page_info_text,
+                                gr.update(interactive=not prev_disabled),
+                                gr.update(interactive=not next_disabled)
+                            )
+                        
                         archive_stats_btn.click(
-                            fn=self.get_archive_stats,
+                            fn=get_stats,
                             inputs=None,
-                            outputs=sessions_output
+                            outputs=[sessions_table, sessions_summary, page_info, prev_page_btn, next_page_btn]
                         )
-                        query_session_btn.click(
-                            fn=self.query_archived_session,
-                            inputs=session_id_input,
-                            outputs=session_output
-                        )
-                        session_id_input.submit(
-                            fn=self.query_archived_session,
-                            inputs=session_id_input,
-                            outputs=session_output
+                        
+                        # Auto-load first page - use app.load event
+                        def init_archive_on_load():
+                            """Initialize archive table with first page on app load"""
+                            return load_page(1)
+                        
+                        # Add to app.load - this will be set up after the app is created
+                        # Store function reference for app.load
+                        archive_load_func = init_archive_on_load
+                        archive_load_outputs = [sessions_table, sessions_summary, page_info, prev_page_btn, next_page_btn]
+                        
+                        # Export selected sessions - consolidated
+                        def export_with_download(selected_df, fmt):
+                            status, filepath = self.export_selected_sessions(selected_df, fmt)
+                            if filepath:
+                                return (
+                                    gr.update(value=status, visible=True),
+                                    gr.update(value=filepath, visible=True, label="Download")
+                                )
+                            else:
+                                return (
+                                    gr.update(value=status, visible=True),
+                                    gr.update(visible=False)
+                                )
+                        
+                        export_selected_btn.click(
+                            fn=export_with_download,
+                            inputs=[sessions_table, export_format],
+                            outputs=[export_output, export_file]
                         )
             
             # Auto-update on page load
@@ -1594,12 +2047,20 @@ class TelemetryGUI:
                 metrics_html = self.get_latest_metrics()
                 return status_text, plot_fig, metrics_html
             
-            # Initial load
+            # Initial load for monitoring tab
             app.load(
                 fn=load_initial_data,
                 inputs=None,
                 outputs=[status, plot, latest_metrics]
             )
+            
+            # Auto-load archive data on app load (if archiving is enabled)
+            # Note: The archive components are in a nested scope, so we need to
+            # initialize them differently. We'll use a workaround by making the
+            # archive initialization happen when the Archive tab is first accessed.
+            # For now, users can click pagination buttons or archive stats to load data.
+            # A better solution would be to use Gradio's tab select events, but that's
+            # not easily available. The data will load when pagination buttons are clicked.
             
             def start_monitoring_wrapper(duration, interval, live):
                 """Start monitoring wrapper"""

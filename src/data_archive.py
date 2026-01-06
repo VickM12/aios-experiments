@@ -248,7 +248,9 @@ class DataArchive:
             params.append(start_time.isoformat())
         
         if end_time:
-            query += ' AND end_time <= ?'
+            # Include sessions that start on or before the end date
+            # This ensures we capture all sessions that occurred during the date range
+            query += ' AND start_time <= ?'
             params.append(end_time.isoformat())
         
         query += ' ORDER BY start_time DESC'
@@ -351,6 +353,42 @@ class DataArchive:
         
         conn.close()
         return events
+    
+    def get_correlated_events_count(self, session_id: str) -> int:
+        """Get count of correlated log events for a session"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT COUNT(*) FROM log_correlations
+            WHERE session_id = ?
+        ''', (session_id,))
+        
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count
+    
+    def get_correlated_events_counts(self, session_ids: List[str]) -> Dict[str, int]:
+        """Get counts of correlated log events for multiple sessions"""
+        if not session_ids:
+            return {}
+        
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Use IN clause for efficient query
+        placeholders = ','.join('?' * len(session_ids))
+        cursor.execute(f'''
+            SELECT session_id, COUNT(*) as count
+            FROM log_correlations
+            WHERE session_id IN ({placeholders})
+            GROUP BY session_id
+        ''', session_ids)
+        
+        counts = {row[0]: row[1] for row in cursor.fetchall()}
+        conn.close()
+        
+        # Ensure all session_ids have a count (even if 0)
+        return {sid: counts.get(sid, 0) for sid in session_ids}
     
     def get_statistics(self) -> Dict[str, Any]:
         """Get archive statistics"""
