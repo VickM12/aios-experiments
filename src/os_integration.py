@@ -101,7 +101,7 @@ class OSIntegration:
     
     def notify_anomaly(self, anomaly_count: int, details: Optional[Dict[str, Any]] = None):
         """Send notification and log anomaly detection"""
-        title = "⚠️ System Anomaly Detected"
+        title = "[WARNING] System Anomaly Detected"
         message = f"Detected {anomaly_count} anomaly/anomalies in system telemetry"
         
         self.send_notification(title, message, urgency="normal")
@@ -109,7 +109,7 @@ class OSIntegration:
     
     def notify_critical_alert(self, metric: str, value: float, threshold: float, unit: str = "%"):
         """Send critical alert notification"""
-        title = "🚨 Critical System Alert"
+        title = "[CRITICAL] System Alert"
         message = f"{metric} is at {value:.1f}{unit} (threshold: {threshold:.1f}{unit})"
         
         self.send_notification(title, message, urgency="critical")
@@ -121,7 +121,7 @@ class OSIntegration:
     
     def notify_warning(self, metric: str, message: str):
         """Send warning notification"""
-        title = f"⚠️ {metric} Warning"
+        title = f"[WARNING] {metric} Warning"
         self.send_notification(title, message, urgency="normal")
         self.log_event("warning", f"{metric} warning: {message}")
     

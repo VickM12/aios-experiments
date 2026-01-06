@@ -163,7 +163,7 @@ class LLMAnalyzer:
                         verbose=False
                     )
                     self.client = "llamacpp"
-                    print(f"✓ Successfully loaded model: {model_path.name}")
+                    print(f"[OK] Successfully loaded model: {model_path.name}")
                 except Exception as load_error:
                     print(f"Error loading model file: {load_error}")
                     print(f"  File exists: {model_path.exists()}")
@@ -358,7 +358,7 @@ class LLMAnalyzer:
                         verbose=False
                     )
                     self.client = "llamacpp"
-                    print(f"✓ Successfully loaded model: {model_path.name}")
+                    print(f"[OK] Successfully loaded model: {model_path.name}")
                 except Exception as load_error:
                     print(f"Error loading model file: {load_error}")
                     print(f"  File exists: {model_path.exists()}")
@@ -820,7 +820,7 @@ Provide: 1) System health assessment 2) Concerning patterns 3) Optimization reco
     
     def _generate_fallback_response(self, context: Dict[str, Any], error_msg: str) -> str:
         """Generate a fallback response with telemetry summary when LLM fails"""
-        response = f"⚠️ **{error_msg}**\n\n"
+        response = f"[WARNING] **{error_msg}**\n\n"
         response += "Here's a summary of your system telemetry:\n\n"
         
         # Latest telemetry

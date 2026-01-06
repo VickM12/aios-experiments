@@ -61,7 +61,7 @@ def pull_model(model_name: str) -> bool:
                 except json.JSONDecodeError:
                     pass
         
-        print(f"✓ Model '{model_name}' pulled successfully")
+        print(f"[OK] Model '{model_name}' pulled successfully")
         return True
     except Exception as e:
         print(f"Error pulling model: {e}")
@@ -158,7 +158,8 @@ def find_model_file(model_name: str, ollama_models_dir: Path) -> Optional[Path]:
                 if not model_blob_hash and 'from' in model_info:
                     from_field = model_info['from']
                     import re
-                    sha256_match = re.search(r'sha256:([a-f0-9]{64})', str(from_field), re.IGNORECASE)
+                    # Handle both sha256: and sha- formats (Windows uses sha-)
+                    sha256_match = re.search(r'sha256[-:]?([a-f0-9]{64})', str(from_field), re.IGNORECASE)
                     if sha256_match:
                         model_blob_hash = sha256_match.group(1)
                         print(f"Found hash in manifest.model.from: {model_blob_hash[:16]}...")
@@ -187,8 +188,8 @@ def find_model_file(model_name: str, ollama_models_dir: Path) -> Optional[Path]:
         if not model_blob_hash and 'modelfile' in manifest:
             modelfile_str = str(manifest.get('modelfile', ''))
             import re
-            # Look for sha256:hash patterns
-            sha256_matches = re.findall(r'sha256:([a-f0-9]{64})', modelfile_str, re.IGNORECASE)
+            # Look for sha256:hash or sha-hash patterns (Windows uses sha-)
+            sha256_matches = re.findall(r'sha256[-:]?([a-f0-9]{64})', modelfile_str, re.IGNORECASE)
             if sha256_matches:
                 # Use the first match (usually the model hash)
                 model_blob_hash = sha256_matches[0]
@@ -204,8 +205,10 @@ def find_model_file(model_name: str, ollama_models_dir: Path) -> Optional[Path]:
                     for key, value in obj.items():
                         if key.lower() in ['digest', 'hash', 'sha256'] and isinstance(value, str):
                             # Check if it looks like a hash
-                            if len(value) >= 32 and all(c in '0123456789abcdefABCDEF' for c in value.replace('sha256:', '').replace(':', '')):
-                                return value.replace('sha256:', '').replace(':', '')
+                            # Handle sha256:, sha256-, sha-, and plain hash formats
+                            cleaned = value.replace('sha256:', '').replace('sha256-', '').replace('sha-', '').replace(':', '').replace('-', '')
+                            if len(cleaned) >= 32 and all(c in '0123456789abcdefABCDEF' for c in cleaned):
+                                return cleaned
                         result = find_hash_recursive(value, depth + 1)
                         if result:
                             return result
@@ -227,8 +230,8 @@ def find_model_file(model_name: str, ollama_models_dir: Path) -> Optional[Path]:
     
     # If we have a hash from manifest, try to find the matching blob
     if model_blob_hash:
-        # Clean the hash - remove prefixes and normalize
-        hash_clean = model_blob_hash.replace('sha256:', '').replace('sha256-', '').replace(':', '').lower().strip()
+        # Clean the hash - remove prefixes and normalize (handle sha256:, sha256-, sha-, etc.)
+        hash_clean = model_blob_hash.replace('sha256:', '').replace('sha256-', '').replace('sha-', '').replace(':', '').replace('-', '').lower().strip()
         print(f"Looking for blob with hash: {hash_clean[:16]}... (full: {hash_clean})")
         
         # Try exact match first
@@ -239,7 +242,8 @@ def find_model_file(model_name: str, ollama_models_dir: Path) -> Optional[Path]:
             if blob_file.is_file():
                 blob_name = blob_file.name.lower()
                 # Remove any prefixes from blob filename
-                blob_hash = blob_name.replace('sha256-', '').replace('sha256:', '').replace(':', '').strip()
+                # Remove all hash prefixes (sha256-, sha256:, sha-, etc.)
+                blob_hash = blob_name.replace('sha256-', '').replace('sha256:', '').replace('sha-', '').replace(':', '').replace('-', '').strip()
                 
                 # Exact match (full hash)
                 if blob_hash == hash_clean or blob_name == hash_clean:
@@ -282,7 +286,7 @@ def find_model_file(model_name: str, ollama_models_dir: Path) -> Optional[Path]:
     min_size = 50 * 1024 * 1024  # 50MB minimum
     
     if not model_blob_hash:
-        print(f"⚠️  Could not extract blob hash from manifest.")
+        print(f"[WARNING] Could not extract blob hash from manifest.")
         print(f"   This means we can't identify the exact blob file for '{model_name}'.")
         print(f"   Falling back to size-based search (may pick wrong file if multiple models exist).")
         print(f"   Consider using HuggingFace download instead for more reliable results.\n")
@@ -311,11 +315,11 @@ def find_model_file(model_name: str, ollama_models_dir: Path) -> Optional[Path]:
         largest_file = valid_gguf_files[0][0]
         largest_size = valid_gguf_files[0][1]
         print(f"Found verified GGUF file: {largest_file.name} ({largest_size / (1024**3):.2f} GB)")
-        print(f"⚠️  Warning: Using size-based selection - this may not be the correct file for '{model_name}'")
+                        print(f"[WARNING] Using size-based selection - this may not be the correct file for '{model_name}'")
         print(f"   If this is wrong, try downloading from HuggingFace instead.")
     elif largest_file:
         print(f"Found potential model file: {largest_file.name} ({largest_size / (1024**3):.2f} GB)")
-        print(f"⚠️  Warning: File not verified as GGUF and may not be correct for '{model_name}'")
+                        print(f"[WARNING] File not verified as GGUF and may not be correct for '{model_name}'")
         print(f"   File format will be verified after copying.")
     else:
         print(f"Warning: No model file found (searched for files > {min_size / (1024**2):.0f} MB)")
@@ -362,8 +366,8 @@ def copy_model_to_local(model_name: str, source_path: Path, dest_name: Optional[
                 pass
             
             # Ollama doesn't export models as GGUF - they're in a proprietary format
-            print(f"\n❌ Error: The file copied from Ollama is not a valid GGUF file.")
-            print(f"\n⚠️  Important: Ollama stores models in a proprietary format.")
+            print(f"\n[ERROR] The file copied from Ollama is not a valid GGUF file.")
+            print(f"\n[WARNING] Important: Ollama stores models in a proprietary format.")
             print(f"   Ollama does NOT provide direct GGUF file downloads.")
             print(f"   The blob files in Ollama's storage cannot be used directly with llama-cpp-python.")
             print(f"\n✅ Solution: Download GGUF models directly from their original sources")
@@ -382,7 +386,7 @@ def copy_model_to_local(model_name: str, source_path: Path, dest_name: Optional[
                 pass
             return None
         
-        print(f"✓ Model saved to {dest_path}")
+        print(f"[OK] Model saved to {dest_path}")
         return dest_path
     except Exception as e:
         print(f"Error copying model: {e}")
@@ -417,27 +421,54 @@ def download_from_huggingface(model_name: str, save_name: Optional[str] = None) 
     print(f"This may take a while depending on model size...")
     
     try:
-        # Try to find GGUF files in the repo
-        # Common patterns: model_name, model_name-GGUF, or look for .gguf files
+        # List files in the repo to find GGUF files
+        from huggingface_hub import list_repo_files
+        
+        print(f"Searching for GGUF files in {model_name}...")
+        repo_files = list_repo_files(repo_id=model_name, repo_type="model")
+        
+        # Find all .gguf files
+        gguf_files = [f for f in repo_files if f.endswith('.gguf')]
+        
+        if not gguf_files:
+            raise Exception(f"No .gguf files found in repository {model_name}")
+        
+        # Prefer quantized models (Q4, Q5, Q6, Q8) or the largest file
+        # Sort by preference: Q4_K_M > Q5_K_M > Q6_K > Q8_0 > others
+        def sort_key(filename):
+            filename_lower = filename.lower()
+            if 'q4_k_m' in filename_lower:
+                return (0, filename)
+            elif 'q5_k_m' in filename_lower:
+                return (1, filename)
+            elif 'q6_k' in filename_lower:
+                return (2, filename)
+            elif 'q8_0' in filename_lower:
+                return (3, filename)
+            else:
+                return (4, filename)
+        
+        gguf_files.sort(key=sort_key)
+        selected_file = gguf_files[0]
+        
+        print(f"Found {len(gguf_files)} GGUF file(s), downloading: {selected_file}")
+        
+        # Download the selected GGUF file
         downloaded_path = hf_hub_download(
             repo_id=model_name,
-            filename="*.gguf",
+            filename=selected_file,
             local_dir=str(MODELS_DIR),
             local_dir_use_symlinks=False
         )
-        # If we got a directory, find the GGUF file
-        if Path(downloaded_path).is_dir():
-            gguf_files = list(Path(downloaded_path).glob("*.gguf"))
-            if gguf_files:
-                downloaded_path = gguf_files[0]
         
         # Rename to desired name if different
-        if Path(downloaded_path).name != save_name:
-            shutil.move(downloaded_path, dest_path)
+        downloaded_path = Path(downloaded_path)
+        if downloaded_path.name != save_name:
+            shutil.move(str(downloaded_path), str(dest_path))
         else:
-            dest_path = Path(downloaded_path)
+            dest_path = downloaded_path
         
-        print(f"✓ Model downloaded to: {dest_path}")
+        print(f"[OK] Model downloaded to: {dest_path}")
         return dest_path
     except Exception as e:
         print(f"Error downloading from HuggingFace: {e}")
@@ -486,7 +517,7 @@ def download_model(model_name: str = "gemma3:1b", save_name: Optional[str] = Non
             try:
                 response = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
                 if response.status_code == 200:
-                    print(f"✓ Connected to Ollama server at {OLLAMA_BASE_URL}")
+                    print(f"[OK] Connected to Ollama server at {OLLAMA_BASE_URL}")
                     ollama_connected = True
                 else:
                     raise Exception(f"Ollama returned status {response.status_code}")
@@ -494,7 +525,7 @@ def download_model(model_name: str = "gemma3:1b", save_name: Optional[str] = Non
                 # If local Ollama failed and we're in auto mode, try to find/use remote Ollama
                 if source == "auto" and (OLLAMA_BASE_URL.startswith("http://localhost") or 
                                          OLLAMA_BASE_URL.startswith("http://127.0.0.1")):
-                    print(f"⚠️  Local Ollama server not available: {e}")
+                    print(f"[WARNING] Local Ollama server not available: {e}")
                     
                     # Try remote Ollama server if configured via environment variable
                     remote_ollama = os.getenv("OLLAMA_REMOTE_URL")
@@ -504,7 +535,7 @@ def download_model(model_name: str = "gemma3:1b", save_name: Optional[str] = Non
                             try:
                                 response = requests.get(f"{remote_ollama}/api/tags", timeout=5)
                                 if response.status_code == 200:
-                                    print(f"✓ Connected to remote Ollama server at {remote_ollama}")
+                                    print(f"[OK] Connected to remote Ollama server at {remote_ollama}")
                                     OLLAMA_BASE_URL = remote_ollama
                                     ollama_connected = True
                                 else:
@@ -518,7 +549,7 @@ def download_model(model_name: str = "gemma3:1b", save_name: Optional[str] = Non
                         try:
                             response = requests.get("https://ollama.com/api/tags", timeout=5)
                             if response.status_code == 200:
-                                print(f"✓ Connected to Ollama cloud API")
+                                print(f"[OK] Connected to Ollama cloud API")
                                 OLLAMA_BASE_URL = "https://ollama.com"
                                 ollama_connected = True
                             else:
@@ -527,11 +558,11 @@ def download_model(model_name: str = "gemma3:1b", save_name: Optional[str] = Non
                             print(f"  Ollama cloud API also unavailable: {cloud_e}")
                     
                     if not ollama_connected:
-                        print(f"⚠️  No Ollama servers available (local, remote, or cloud)")
+                        print(f"[WARNING] No Ollama servers available (local, remote, or cloud)")
                         print(f"Falling back to HuggingFace download...\n")
                         return download_from_huggingface(model_name, save_name)
                 elif source == "ollama":
-                    print(f"❌ Error: Cannot connect to Ollama server: {e}")
+                    print(f"[ERROR] Cannot connect to Ollama server: {e}")
                     print(f"\nTo use Ollama:")
                     print(f"1. Install Ollama locally: https://ollama.com/download")
                     print(f"2. Start Ollama server: ollama serve")
@@ -542,7 +573,7 @@ def download_model(model_name: str = "gemma3:1b", save_name: Optional[str] = Non
                     return None
                 else:
                     # Auto mode but not localhost - already tried, fallback to HuggingFace
-                    print(f"⚠️  Ollama server not available: {e}")
+                    print(f"[WARNING] Ollama server not available: {e}")
                     print(f"Falling back to HuggingFace download...\n")
                     return download_from_huggingface(model_name, save_name)
             
@@ -557,14 +588,14 @@ def download_model(model_name: str = "gemma3:1b", save_name: Optional[str] = Non
                 print(f"\nPulling model from Ollama API...")
                 if not pull_model(model_name):
                     if source == "auto":
-                        print(f"\n⚠️  Failed to pull from Ollama, falling back to HuggingFace...\n")
+                        print(f"\n[WARNING] Failed to pull from Ollama, falling back to HuggingFace...\n")
                         return download_from_huggingface(model_name, save_name)
                     return None
                 # Refresh list
                 available_models = get_ollama_models()
                 if model_name not in available_models:
                     if source == "auto":
-                        print(f"\n⚠️  Model still not available, falling back to HuggingFace...\n")
+                        print(f"\n[WARNING] Model still not available, falling back to HuggingFace...\n")
                         return download_from_huggingface(model_name, save_name)
                     print(f"Error: Model '{model_name}' still not available after pulling")
                     return None
@@ -594,17 +625,17 @@ def download_model(model_name: str = "gemma3:1b", save_name: Optional[str] = Non
             saved_path = copy_model_to_local(model_name, model_file, save_name)
             
             if saved_path:
-                print(f"\n✓ Success! Model saved to: {saved_path}")
+                print(f"\n[OK] Success! Model saved to: {saved_path}")
                 print(f"  You can now use this model with llama-cpp-python")
                 return saved_path
             else:
                 if source == "auto":
-                    print(f"\n⚠️  Failed to extract GGUF from Ollama, falling back to HuggingFace...\n")
+                    print(f"\n[WARNING] Failed to extract GGUF from Ollama, falling back to HuggingFace...\n")
                     return download_from_huggingface(model_name, save_name)
                 return None
         else:
             # Remote Ollama server - can't access blob storage directly
-            print(f"⚠️  Remote Ollama server detected: {OLLAMA_BASE_URL}")
+            print(f"[WARNING] Remote Ollama server detected: {OLLAMA_BASE_URL}")
             print(f"Cannot access blob storage on remote server.")
             print(f"Falling back to HuggingFace download...\n")
             return download_from_huggingface(model_name, save_name)
