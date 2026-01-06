@@ -1097,10 +1097,13 @@ class TelemetryGUI:
             padding: 4px 2px !important;
         }
         
-        /* Make export button narrower */
+        /* Save buttons should fit their text content without wrapping */
         button.icon-save {
-            min-width: 80px !important;
-            max-width: 100px !important;
+            width: auto !important;
+            min-width: auto !important;
+            max-width: 200px !important;
+            white-space: nowrap !important;
+            padding: 2px 2px !important;
         }
         
         /* Compact radio buttons - bring them closer to export button */
@@ -1312,14 +1315,18 @@ class TelemetryGUI:
                     
                     def save_monitoring_prefs(duration, interval, archive):
                         """Save monitoring preferences"""
-                        self.config.set("monitoring.default_duration", int(duration))
-                        self.config.set("monitoring.default_interval", float(interval))
-                        self.config.set("archive.enabled", archive)
-                        self.config.save_config()
-                        return f"{self._icon('check')} Preferences saved!"
+                        try:
+                            self.config.set("monitoring.default_duration", int(duration))
+                            self.config.set("monitoring.default_interval", float(interval))
+                            self.config.set("archive.enabled", archive)
+                            self.config.save_config()
+                            return f"{self._icon('check-circle')} Preferences saved successfully!"
+                        except Exception as e:
+                            return f"{self._icon('exclamation-triangle')} Error saving preferences: {str(e)}"
                     
-                    save_prefs_btn = gr.Button("Save Preferences", variant="primary", elem_classes=["icon-save"])
-                    prefs_status = gr.Markdown()
+                    with gr.Row():
+                        save_prefs_btn = gr.Button("Save Preferences", variant="primary", elem_classes=["icon-save"], scale=1)
+                        prefs_status = gr.Markdown()
                     save_prefs_btn.click(
                         fn=save_monitoring_prefs,
                         inputs=[default_duration, default_interval, auto_archive],
