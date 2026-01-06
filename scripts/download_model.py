@@ -99,7 +99,7 @@ def get_model_manifest(model_name: str) -> Optional[dict]:
                 print(f"Manifest keys: {list(manifest.keys())}")
                 # Print the full manifest for debugging (can be verbose, but helpful)
                 import json
-                print(f"Full manifest (first 2000 chars): {json.dumps(manifest, indent=2)[:2000]}")
+                print(f"Full manifest (first 3000 chars):\n{json.dumps(manifest, indent=2)[:3000]}")
             return manifest
     except Exception as e:
         print(f"Error getting model manifest: {e}")
@@ -224,6 +224,15 @@ def find_model_file(model_name: str, ollama_models_dir: Path) -> Optional[Path]:
                 model_blob_hash = found_hash
                 print(f"Found hash via recursive search: {model_blob_hash[:16]}...")
     
+    # If we couldn't extract the hash from manifest, we can't reliably find the file
+    if not model_blob_hash:
+        print(f"[ERROR] Could not extract blob hash from manifest for '{model_name}'.")
+        print(f"   This means we cannot identify the exact blob file needed.")
+        print(f"   Ollama stores models in a proprietary format and requires the manifest hash to locate them.")
+        print(f"\n[INFO] Solution: Download the model directly from HuggingFace instead.")
+        print(f"   The download script will automatically fall back to HuggingFace if Ollama extraction fails.")
+        return None
+    
     # Get all blob files
     blob_files = list(ollama_models_dir.glob("*"))
     print(f"Found {len(blob_files)} files in Ollama storage")
@@ -240,10 +249,18 @@ def find_model_file(model_name: str, ollama_models_dir: Path) -> Optional[Path]:
         
         for blob_file in blob_files:
             if blob_file.is_file():
-                blob_name = blob_file.name.lower()
-                # Remove any prefixes from blob filename
-                # Remove all hash prefixes (sha256-, sha256:, sha-, etc.)
-                blob_hash = blob_name.replace('sha256-', '').replace('sha256:', '').replace('sha-', '').replace(':', '').replace('-', '').strip()
+                blob_name = blob_file.name
+                blob_name_lower = blob_name.lower()
+                # Extract hash from filename - handle both sha256-<hash> and sha-<hash> formats (Windows)
+                # Also handle plain hash filenames
+                import re
+                # Try to extract hash from filename (sha256-<hash>, sha-<hash>, or plain <hash>)
+                hash_match = re.search(r'(?:sha256[-:]?|sha[-:]?)?([a-f0-9]{64})', blob_name, re.IGNORECASE)
+                if hash_match:
+                    blob_hash = hash_match.group(1).lower()
+                else:
+                    # Fallback: remove all prefixes
+                    blob_hash = blob_name_lower.replace('sha256-', '').replace('sha256:', '').replace('sha-', '').replace(':', '').replace('-', '').strip()
                 
                 # Exact match (full hash)
                 if blob_hash == hash_clean or blob_name == hash_clean:
@@ -262,7 +279,9 @@ def find_model_file(model_name: str, ollama_models_dir: Path) -> Optional[Path]:
                 print(f"Verified: blob file is a valid GGUF")
                 return exact_match
             else:
-                print(f"Warning: Exact match found but file is not a valid GGUF, continuing search...")
+                print(f"[WARNING] Exact match found but file is not a valid GGUF file.")
+                print(f"   This may indicate the file is corrupted or in a different format.")
+                return None
         
         # If we have partial matches, prefer the one with the longest hash (most specific)
         if partial_matches:
@@ -272,59 +291,16 @@ def find_model_file(model_name: str, ollama_models_dir: Path) -> Optional[Path]:
                 if verify_gguf_file(blob_file):
                     print(f"Found and verified partial matching blob file: {blob_file.name}")
                     return blob_file
-            # If none are valid GGUF, use the best match anyway (might still work)
-            best_match = partial_matches[0][0]
-            print(f"Found partial matching blob file: {best_match.name} (best of {len(partial_matches)} matches, not verified as GGUF)")
-            return best_match
+            # If none are valid GGUF, fail
+            print(f"[WARNING] Found partial matches but none are valid GGUF files.")
+            return None
         
-        print(f"Warning: Could not find blob file matching hash {hash_clean[:16]}...")
+        print(f"[ERROR] Could not find blob file matching hash {hash_clean[:16]}...")
+        print(f"   Searched {len(blob_files)} files in Ollama storage.")
+        print(f"   The model may not be fully downloaded, or the hash format is unexpected.")
+        return None
     
-    # Fallback: Find the largest file in the blobs directory
-    # Model files are typically the largest files (> 50MB for small models, > 100MB for larger ones)
-    largest_file = None
-    largest_size = 0
-    min_size = 50 * 1024 * 1024  # 50MB minimum
-    
-    if not model_blob_hash:
-        print(f"[WARNING] Could not extract blob hash from manifest.")
-        print(f"   This means we can't identify the exact blob file for '{model_name}'.")
-        print(f"   Falling back to size-based search (may pick wrong file if multiple models exist).")
-        print(f"   Consider using HuggingFace download instead for more reliable results.\n")
-    
-    # Sort by size and check if files are valid GGUF
-    valid_gguf_files = []
-    for blob_file in blob_files:
-        if blob_file.is_file():
-            try:
-                size = blob_file.stat().st_size
-                if size >= min_size:
-                    # Check if it's a valid GGUF file
-                    if verify_gguf_file(blob_file):
-                        valid_gguf_files.append((blob_file, size))
-                    elif size > largest_size:
-                        # Keep track of largest file even if not verified yet
-                        largest_size = size
-                        largest_file = blob_file
-            except (OSError, PermissionError):
-                continue
-    
-    # Prefer verified GGUF files
-    if valid_gguf_files:
-        # Get the largest verified GGUF file
-        valid_gguf_files.sort(key=lambda x: x[1], reverse=True)
-        largest_file = valid_gguf_files[0][0]
-        largest_size = valid_gguf_files[0][1]
-        print(f"Found verified GGUF file: {largest_file.name} ({largest_size / (1024**3):.2f} GB)")
-        print(f"[WARNING] Using size-based selection - this may not be the correct file for '{model_name}'")
-        print(f"   If this is wrong, try downloading from HuggingFace instead.")
-    elif largest_file:
-        print(f"Found potential model file: {largest_file.name} ({largest_size / (1024**3):.2f} GB)")
-        print(f"[WARNING] File not verified as GGUF and may not be correct for '{model_name}'")
-        print(f"   File format will be verified after copying.")
-    else:
-        print(f"Warning: No model file found (searched for files > {min_size / (1024**2):.0f} MB)")
-    
-    return largest_file
+    return None
 
 
 def copy_model_to_local(model_name: str, source_path: Path, dest_name: Optional[str] = None) -> Optional[Path]:
