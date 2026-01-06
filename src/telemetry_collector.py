@@ -372,10 +372,26 @@ class TelemetryCollector:
                 for line in result.stdout.strip().split('\n'):
                     parts = [p.strip() for p in line.split(',')]
                     if len(parts) >= 2:
-                        gpu_power.append({
-                            'power_draw_watts': float(parts[0]) if parts[0] else None,
-                            'power_limit_watts': float(parts[1]) if parts[1] else None,
-                        })
+                        # Helper function to safely convert to float
+                        def safe_float(value):
+                            if not value or value.upper() in ['N/A', 'NAN', 'NONE', '']:
+                                return None
+                            # Remove brackets and other non-numeric characters
+                            value = value.strip('[]/')
+                            try:
+                                return float(value)
+                            except (ValueError, TypeError):
+                                return None
+                        
+                        power_draw = safe_float(parts[0])
+                        power_limit = safe_float(parts[1])
+                        
+                        # Only add if we have at least one valid value
+                        if power_draw is not None or power_limit is not None:
+                            gpu_power.append({
+                                'power_draw_watts': power_draw,
+                                'power_limit_watts': power_limit,
+                            })
                 if gpu_power:
                     power_info['gpu'] = gpu_power
         except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
