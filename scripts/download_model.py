@@ -93,7 +93,11 @@ def get_model_manifest(model_name: str) -> Optional[dict]:
                                json={"name": model_name},
                                timeout=10)
         if response.status_code == 200:
-            return response.json()
+            manifest = response.json()
+            # Debug: print manifest structure (first level keys only)
+            if manifest:
+                print(f"Manifest keys: {list(manifest.keys())[:10]}")  # Show first 10 keys
+            return manifest
     except Exception as e:
         print(f"Error getting model manifest: {e}")
     return None
@@ -120,16 +124,76 @@ def verify_gguf_file(file_path: Path) -> bool:
 
 
 def find_model_file(model_name: str, ollama_models_dir: Path) -> Optional[Path]:
-    """Find the actual model file (GGUF) in Ollama's storage"""
+    """Find the actual model file (GGUF) in Ollama's storage for the specific model"""
     # Ollama stores models as blobs with SHA256 hashes
-    # Strategy: Try to get manifest first, then fall back to finding largest file
+    # Strategy: Use manifest to find the correct blob, then fall back to finding largest file
+    
+    print(f"Searching for model file for '{model_name}' in {ollama_models_dir}...")
     
     # Try to get model manifest to find the correct blob
     manifest = get_model_manifest(model_name)
+    model_blob_hash = None
+    
     if manifest:
-        # The manifest might contain digest information
-        # Look for the largest blob that matches model size expectations
-        pass
+        # The manifest contains digest information that we can use to find the correct blob
+        # Look for 'digest', 'model', or 'layers' fields that might contain blob hashes
+        print(f"Retrieved manifest for {model_name}")
+        
+        # Try to extract digest/hash from manifest
+        # Ollama manifests can have different structures, try common fields
+        if 'digest' in manifest:
+            model_blob_hash = manifest['digest']
+        elif 'model' in manifest and isinstance(manifest['model'], dict):
+            if 'digest' in manifest['model']:
+                model_blob_hash = manifest['model']['digest']
+        elif 'modelfile' in manifest:
+            # Sometimes the hash is in the modelfile or other fields
+            # Look for SHA256 patterns
+            modelfile_str = str(manifest.get('modelfile', ''))
+            import re
+            sha256_match = re.search(r'sha256:([a-f0-9]{64})', modelfile_str, re.IGNORECASE)
+            if sha256_match:
+                model_blob_hash = sha256_match.group(1)
+        
+        # Also check if there's a 'layers' or 'blobs' field
+        if not model_blob_hash:
+            for key in ['layers', 'blobs', 'weights']:
+                if key in manifest and isinstance(manifest[key], list):
+                    # Get the largest layer/blob (usually the model weights)
+                    layers = manifest[key]
+                    if layers:
+                        # Sort by size if available, or take the last one
+                        largest_layer = None
+                        largest_size = 0
+                        for layer in layers:
+                            if isinstance(layer, dict):
+                                size = layer.get('size', 0)
+                                digest = layer.get('digest') or layer.get('hash')
+                                if size > largest_size:
+                                    largest_size = size
+                                    if digest:
+                                        model_blob_hash = digest
+                                        largest_layer = layer
+                        if model_blob_hash:
+                            break
+    
+    # Get all blob files
+    blob_files = list(ollama_models_dir.glob("*"))
+    print(f"Found {len(blob_files)} files in Ollama storage")
+    
+    # If we have a hash from manifest, try to find the matching blob
+    if model_blob_hash:
+        # Remove 'sha256:' prefix if present
+        hash_clean = model_blob_hash.replace('sha256:', '').lower()
+        print(f"Looking for blob with hash: {hash_clean[:16]}...")
+        
+        for blob_file in blob_files:
+            if blob_file.is_file():
+                # Check if filename contains the hash (Ollama uses hash as filename)
+                blob_name = blob_file.name.lower()
+                if hash_clean in blob_name or blob_name.startswith(hash_clean):
+                    print(f"Found matching blob file: {blob_file.name}")
+                    return blob_file
     
     # Fallback: Find the largest file in the blobs directory
     # Model files are typically the largest files (> 50MB for small models, > 100MB for larger ones)
@@ -137,9 +201,8 @@ def find_model_file(model_name: str, ollama_models_dir: Path) -> Optional[Path]:
     largest_size = 0
     min_size = 50 * 1024 * 1024  # 50MB minimum
     
-    print(f"Searching for model file in {ollama_models_dir}...")
-    blob_files = list(ollama_models_dir.glob("*"))
-    print(f"Found {len(blob_files)} files in Ollama storage")
+    if not model_blob_hash:
+        print(f"Could not extract blob hash from manifest, using size-based search...")
     
     # Sort by size and check if files are valid GGUF
     valid_gguf_files = []
@@ -212,16 +275,19 @@ def copy_model_to_local(model_name: str, source_path: Path, dest_name: Optional[
             except:
                 pass
             
-            # For now, return None and suggest manual download
-            print(f"\nError: The file copied from Ollama is not a valid GGUF file.")
-            print(f"Ollama stores models in a proprietary format that may not be directly compatible.")
-            print(f"\nAlternative solutions:")
-            print(f"1. Download the model directly from HuggingFace:")
+            # Ollama doesn't export models as GGUF - they're in a proprietary format
+            print(f"\n❌ Error: The file copied from Ollama is not a valid GGUF file.")
+            print(f"\n⚠️  Important: Ollama stores models in a proprietary format.")
+            print(f"   Ollama does NOT provide direct GGUF file downloads.")
+            print(f"   The blob files in Ollama's storage cannot be used directly with llama-cpp-python.")
+            print(f"\n✅ Solution: Download GGUF models directly from their original sources")
+            print(f"\nRecommended approach:")
+            print(f"1. Visit HuggingFace and search for GGUF versions of your model:")
             print(f"   https://huggingface.co/models?search=gguf")
-            print(f"2. Use a tool like 'ollama pull' and then export:")
-            print(f"   ollama pull {model_name}")
-            print(f"   ollama show {model_name} --modelfile")
-            print(f"3. Use a different model source that provides direct GGUF downloads")
+            print(f"2. For gemma3:1b, try: https://huggingface.co/google/gemma-2-1b-it")
+            print(f"3. Download the .gguf file and place it in: {MODELS_DIR}")
+            print(f"\nOr use TheBloke's quantized models (many GGUF options):")
+            print(f"   https://huggingface.co/TheBloke")
             
             # Clean up the invalid file
             try:
@@ -237,69 +303,186 @@ def copy_model_to_local(model_name: str, source_path: Path, dest_name: Optional[
         return None
 
 
-def download_model(model_name: str = "gemma3:1b", save_name: Optional[str] = None) -> Optional[Path]:
+def download_from_huggingface(model_name: str, save_name: Optional[str] = None) -> Optional[Path]:
     """
-    Download model weights from Ollama and save locally
+    Download GGUF model directly from HuggingFace
     
     Args:
-        model_name: Name of the model in Ollama (e.g., "gemma3:1b")
+        model_name: Model name (e.g., "gemma-2-1b-it" or HuggingFace repo path)
         save_name: Optional custom name for the saved file
     
     Returns:
         Path to the saved model file, or None if failed
     """
-    print(f"Downloading model: {model_name}")
-    print(f"Ollama URL: {OLLAMA_BASE_URL}")
-    print(f"Models directory: {MODELS_DIR}\n")
-    
-    # Check if Ollama is running
     try:
-        response = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=2)
-        if response.status_code != 200:
-            print("Error: Ollama is not responding. Make sure Ollama is running.")
-            return None
+        from huggingface_hub import hf_hub_download
+    except ImportError:
+        print("Error: huggingface_hub not installed. Install it with: pip install huggingface_hub")
+        return None
+    
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    
+    if save_name is None:
+        save_name = model_name.replace(":", "-").replace("/", "-") + ".gguf"
+    
+    dest_path = MODELS_DIR / save_name
+    
+    print(f"Downloading {model_name} from HuggingFace...")
+    print(f"This may take a while depending on model size...")
+    
+    try:
+        # Try to find GGUF files in the repo
+        # Common patterns: model_name, model_name-GGUF, or look for .gguf files
+        downloaded_path = hf_hub_download(
+            repo_id=model_name,
+            filename="*.gguf",
+            local_dir=str(MODELS_DIR),
+            local_dir_use_symlinks=False
+        )
+        # If we got a directory, find the GGUF file
+        if Path(downloaded_path).is_dir():
+            gguf_files = list(Path(downloaded_path).glob("*.gguf"))
+            if gguf_files:
+                downloaded_path = gguf_files[0]
+        
+        # Rename to desired name if different
+        if Path(downloaded_path).name != save_name:
+            shutil.move(downloaded_path, dest_path)
+        else:
+            dest_path = Path(downloaded_path)
+        
+        print(f"✓ Model downloaded to: {dest_path}")
+        return dest_path
     except Exception as e:
-        print(f"Error: Cannot connect to Ollama: {e}")
-        print("Make sure Ollama is running: ollama serve")
+        print(f"Error downloading from HuggingFace: {e}")
+        print(f"\nYou may need to:")
+        print(f"1. Specify the full HuggingFace repo path (e.g., 'google/gemma-2-1b-it')")
+        print(f"2. Or download manually from: https://huggingface.co/models?search=gguf")
         return None
+
+
+def download_model(model_name: str = "gemma3:1b", save_name: Optional[str] = None, 
+                   source: str = "auto", ollama_url: Optional[str] = None) -> Optional[Path]:
+    """
+    Download model weights and save locally
     
-    # Check if model is available
-    available_models = get_ollama_models()
-    if model_name not in available_models:
-        print(f"Model '{model_name}' not found in Ollama.")
-        print(f"Available models: {', '.join(available_models) if available_models else 'None'}")
-        print(f"\nPulling model from Ollama...")
-        if not pull_model(model_name):
-            return None
-        # Refresh list
-        available_models = get_ollama_models()
+    Args:
+        model_name: Name of the model (e.g., "gemma3:1b" for Ollama, or HuggingFace repo path)
+        save_name: Optional custom name for the saved file
+        source: Source to download from - "auto" (try Ollama first, fallback to HuggingFace),
+                "ollama" (Ollama only), or "huggingface" (HuggingFace only)
+        ollama_url: Optional custom Ollama server URL (default: http://localhost:11434)
+                    Can be a remote server like http://remote-server:11434
+    
+    Returns:
+        Path to the saved model file, or None if failed
+    """
+    # Use custom Ollama URL if provided
+    global OLLAMA_BASE_URL
+    original_url = OLLAMA_BASE_URL
+    if ollama_url:
+        OLLAMA_BASE_URL = ollama_url
+    
+    try:
+        if source == "huggingface":
+            return download_from_huggingface(model_name, save_name)
+        
+        # Try Ollama first (if source is "auto" or "ollama")
+        if source in ["auto", "ollama"]:
+            print(f"Attempting to download via Ollama API...")
+            print(f"Ollama URL: {OLLAMA_BASE_URL}")
+            print(f"Models directory: {MODELS_DIR}\n")
+            
+            # Check if Ollama server is accessible (local or remote)
+            try:
+                response = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
+                if response.status_code == 200:
+                    print(f"✓ Connected to Ollama server at {OLLAMA_BASE_URL}")
+                else:
+                    raise Exception(f"Ollama returned status {response.status_code}")
+            except Exception as e:
+                if source == "ollama":
+                    print(f"❌ Error: Cannot connect to Ollama server: {e}")
+                    print(f"\nTo use Ollama:")
+                    print(f"1. Install Ollama: https://ollama.com/download")
+                    print(f"2. Start Ollama server: ollama serve")
+                    print(f"3. Or use a remote Ollama server by setting OLLAMA_BASE_URL")
+                    return None
+                else:
+                    # Auto mode: fallback to HuggingFace
+                    print(f"⚠️  Ollama server not available: {e}")
+                    print(f"Falling back to HuggingFace download...\n")
+                    return download_from_huggingface(model_name, save_name)
+            
+            print(f"Note: Ollama stores models in a proprietary format.")
+            print(f"If extraction fails, we'll suggest HuggingFace as an alternative.\n")
+            
+            # Check if model is available
+            available_models = get_ollama_models()
         if model_name not in available_models:
-            print(f"Error: Model '{model_name}' still not available after pulling")
-            return None
-    
-    # Find model file in Ollama storage
-    ollama_models_dir = get_model_path(model_name)
-    if ollama_models_dir is None:
-        print("Error: Could not locate Ollama models directory")
-        return None
-    
-    model_file = find_model_file(model_name, ollama_models_dir)
-    if model_file is None:
-        print("Error: Could not find model file in Ollama storage")
-        print("You may need to manually locate the model file")
-        return None
-    
-    print(f"Found model file: {model_file} ({model_file.stat().st_size / (1024**2):.1f} MB)")
-    
-    # Copy to local models directory
-    saved_path = copy_model_to_local(model_name, model_file, save_name)
-    
-    if saved_path:
-        print(f"\n✓ Success! Model saved to: {saved_path}")
-        print(f"  You can now use this model with llama-cpp-python")
-        return saved_path
-    else:
-        return None
+            print(f"Model '{model_name}' not found in Ollama.")
+            print(f"Available models: {', '.join(available_models) if available_models else 'None'}")
+            print(f"\nPulling model from Ollama API...")
+            if not pull_model(model_name):
+                if source == "auto":
+                    print(f"\n⚠️  Failed to pull from Ollama, falling back to HuggingFace...\n")
+                    return download_from_huggingface(model_name, save_name)
+                return None
+            # Refresh list
+            available_models = get_ollama_models()
+            if model_name not in available_models:
+                if source == "auto":
+                    print(f"\n⚠️  Model still not available, falling back to HuggingFace...\n")
+                    return download_from_huggingface(model_name, save_name)
+                print(f"Error: Model '{model_name}' still not available after pulling")
+                return None
+        
+        # Find model file in Ollama storage (only works if Ollama is local)
+        # For remote Ollama servers, we can't access the blob storage
+        if OLLAMA_BASE_URL.startswith("http://localhost") or OLLAMA_BASE_URL.startswith("http://127.0.0.1"):
+            ollama_models_dir = get_model_path(model_name)
+            if ollama_models_dir is None:
+                print("Error: Could not locate Ollama models directory")
+                if source == "auto":
+                    print(f"Falling back to HuggingFace...\n")
+                    return download_from_huggingface(model_name, save_name)
+                return None
+            
+            model_file = find_model_file(model_name, ollama_models_dir)
+            if model_file is None:
+                print("Error: Could not find model file in Ollama storage")
+                if source == "auto":
+                    print(f"Falling back to HuggingFace...\n")
+                    return download_from_huggingface(model_name, save_name)
+                return None
+            
+            print(f"Found model file: {model_file} ({model_file.stat().st_size / (1024**2):.1f} MB)")
+            
+            # Copy to local models directory
+            saved_path = copy_model_to_local(model_name, model_file, save_name)
+            
+            if saved_path:
+                print(f"\n✓ Success! Model saved to: {saved_path}")
+                print(f"  You can now use this model with llama-cpp-python")
+                return saved_path
+            else:
+                if source == "auto":
+                    print(f"\n⚠️  Failed to extract GGUF from Ollama, falling back to HuggingFace...\n")
+                    return download_from_huggingface(model_name, save_name)
+                return None
+        else:
+            # Remote Ollama server - can't access blob storage directly
+            print(f"⚠️  Remote Ollama server detected: {OLLAMA_BASE_URL}")
+            print(f"Cannot access blob storage on remote server.")
+            print(f"Falling back to HuggingFace download...\n")
+            return download_from_huggingface(model_name, save_name)
+        else:
+            # Direct HuggingFace download (source == "huggingface" already handled above)
+            # This shouldn't be reached, but just in case
+            return download_from_huggingface(model_name, save_name)
+    finally:
+        # Restore original URL
+        OLLAMA_BASE_URL = original_url
 
 
 if __name__ == "__main__":
