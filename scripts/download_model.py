@@ -94,9 +94,12 @@ def get_model_manifest(model_name: str) -> Optional[dict]:
                                timeout=10)
         if response.status_code == 200:
             manifest = response.json()
-            # Debug: print manifest structure (first level keys only)
+            # Debug: print manifest structure
             if manifest:
-                print(f"Manifest keys: {list(manifest.keys())[:10]}")  # Show first 10 keys
+                print(f"Manifest keys: {list(manifest.keys())}")
+                # Print the full manifest for debugging (can be verbose, but helpful)
+                import json
+                print(f"Full manifest (first 2000 chars): {json.dumps(manifest, indent=2)[:2000]}")
             return manifest
     except Exception as e:
         print(f"Error getting model manifest: {e}")
@@ -136,46 +139,87 @@ def find_model_file(model_name: str, ollama_models_dir: Path) -> Optional[Path]:
     
     if manifest:
         # The manifest contains digest information that we can use to find the correct blob
-        # Look for 'digest', 'model', or 'layers' fields that might contain blob hashes
         print(f"Retrieved manifest for {model_name}")
         
-        # Try to extract digest/hash from manifest
-        # Ollama manifests can have different structures, try common fields
+        # Try multiple strategies to find the model blob hash
+        # Strategy 1: Direct digest field
         if 'digest' in manifest:
             model_blob_hash = manifest['digest']
-        elif 'model' in manifest and isinstance(manifest['model'], dict):
-            if 'digest' in manifest['model']:
-                model_blob_hash = manifest['model']['digest']
-        elif 'modelfile' in manifest:
-            # Sometimes the hash is in the modelfile or other fields
-            # Look for SHA256 patterns
+            print(f"Found digest in manifest: {model_blob_hash[:16]}...")
+        
+        # Strategy 2: Check 'model' nested dict
+        if not model_blob_hash and 'model' in manifest:
+            model_info = manifest['model']
+            if isinstance(model_info, dict):
+                if 'digest' in model_info:
+                    model_blob_hash = model_info['digest']
+                    print(f"Found digest in manifest.model: {model_blob_hash[:16]}...")
+                # Check for 'from' field which might contain the base model hash
+                if not model_blob_hash and 'from' in model_info:
+                    from_field = model_info['from']
+                    import re
+                    sha256_match = re.search(r'sha256:([a-f0-9]{64})', str(from_field), re.IGNORECASE)
+                    if sha256_match:
+                        model_blob_hash = sha256_match.group(1)
+                        print(f"Found hash in manifest.model.from: {model_blob_hash[:16]}...")
+        
+        # Strategy 3: Check 'layers' array - find the largest layer (model weights)
+        if not model_blob_hash:
+            for key in ['layers', 'blobs', 'weights', 'config', 'model_layers']:
+                if key in manifest:
+                    data = manifest[key]
+                    if isinstance(data, list) and len(data) > 0:
+                        print(f"Found {key} array with {len(data)} items")
+                        # Find the largest layer/blob by size
+                        largest_size = 0
+                        for item in data:
+                            if isinstance(item, dict):
+                                size = item.get('size', item.get('Size', 0))
+                                digest = item.get('digest') or item.get('Digest') or item.get('hash') or item.get('Hash')
+                                if size > largest_size and digest:
+                                    largest_size = size
+                                    model_blob_hash = digest
+                        if model_blob_hash:
+                            print(f"Found largest layer digest from {key}: {model_blob_hash[:16]}... (size: {largest_size / (1024**2):.1f} MB)")
+                            break
+        
+        # Strategy 4: Check modelfile for hash references
+        if not model_blob_hash and 'modelfile' in manifest:
             modelfile_str = str(manifest.get('modelfile', ''))
             import re
-            sha256_match = re.search(r'sha256:([a-f0-9]{64})', modelfile_str, re.IGNORECASE)
-            if sha256_match:
-                model_blob_hash = sha256_match.group(1)
+            # Look for sha256:hash patterns
+            sha256_matches = re.findall(r'sha256:([a-f0-9]{64})', modelfile_str, re.IGNORECASE)
+            if sha256_matches:
+                # Use the first match (usually the model hash)
+                model_blob_hash = sha256_matches[0]
+                print(f"Found hash in modelfile: {model_blob_hash[:16]}...")
         
-        # Also check if there's a 'layers' or 'blobs' field
+        # Strategy 5: Check 'config' or other nested structures
         if not model_blob_hash:
-            for key in ['layers', 'blobs', 'weights']:
-                if key in manifest and isinstance(manifest[key], list):
-                    # Get the largest layer/blob (usually the model weights)
-                    layers = manifest[key]
-                    if layers:
-                        # Sort by size if available, or take the last one
-                        largest_layer = None
-                        largest_size = 0
-                        for layer in layers:
-                            if isinstance(layer, dict):
-                                size = layer.get('size', 0)
-                                digest = layer.get('digest') or layer.get('hash')
-                                if size > largest_size:
-                                    largest_size = size
-                                    if digest:
-                                        model_blob_hash = digest
-                                        largest_layer = layer
-                        if model_blob_hash:
-                            break
+            # Recursively search for digest/hash fields
+            def find_hash_recursive(obj, depth=0):
+                if depth > 3:  # Limit recursion depth
+                    return None
+                if isinstance(obj, dict):
+                    for key, value in obj.items():
+                        if key.lower() in ['digest', 'hash', 'sha256'] and isinstance(value, str):
+                            # Check if it looks like a hash
+                            if len(value) >= 32 and all(c in '0123456789abcdefABCDEF' for c in value.replace('sha256:', '').replace(':', '')):
+                                return value.replace('sha256:', '').replace(':', '')
+                        result = find_hash_recursive(value, depth + 1)
+                        if result:
+                            return result
+                elif isinstance(obj, list):
+                    for item in obj:
+                        result = find_hash_recursive(item, depth + 1)
+                        if result:
+                            return result
+                return None
+            
+            found_hash = find_hash_recursive(manifest)
+            if found_hash:
+                model_blob_hash = found_hash
+                print(f"Found hash via recursive search: {model_blob_hash[:16]}...")
     
     # Get all blob files
     blob_files = list(ollama_models_dir.glob("*"))
@@ -183,17 +227,53 @@ def find_model_file(model_name: str, ollama_models_dir: Path) -> Optional[Path]:
     
     # If we have a hash from manifest, try to find the matching blob
     if model_blob_hash:
-        # Remove 'sha256:' prefix if present
-        hash_clean = model_blob_hash.replace('sha256:', '').lower()
-        print(f"Looking for blob with hash: {hash_clean[:16]}...")
+        # Clean the hash - remove prefixes and normalize
+        hash_clean = model_blob_hash.replace('sha256:', '').replace('sha256-', '').replace(':', '').lower().strip()
+        print(f"Looking for blob with hash: {hash_clean[:16]}... (full: {hash_clean})")
+        
+        # Try exact match first
+        exact_match = None
+        partial_matches = []
         
         for blob_file in blob_files:
             if blob_file.is_file():
-                # Check if filename contains the hash (Ollama uses hash as filename)
                 blob_name = blob_file.name.lower()
-                if hash_clean in blob_name or blob_name.startswith(hash_clean):
-                    print(f"Found matching blob file: {blob_file.name}")
+                # Remove any prefixes from blob filename
+                blob_hash = blob_name.replace('sha256-', '').replace('sha256:', '').replace(':', '').strip()
+                
+                # Exact match (full hash)
+                if blob_hash == hash_clean or blob_name == hash_clean:
+                    exact_match = blob_file
+                    print(f"Found exact matching blob file: {blob_file.name}")
+                    break
+                
+                # Partial match (hash starts with or contains the search hash, or vice versa)
+                if len(hash_clean) >= 16:  # Only try partial if we have a reasonable hash length
+                    if blob_hash.startswith(hash_clean[:16]) or hash_clean.startswith(blob_hash[:16]):
+                        partial_matches.append((blob_file, len(blob_hash)))
+        
+        if exact_match:
+            # Verify it's a valid GGUF before returning
+            if verify_gguf_file(exact_match):
+                print(f"Verified: blob file is a valid GGUF")
+                return exact_match
+            else:
+                print(f"Warning: Exact match found but file is not a valid GGUF, continuing search...")
+        
+        # If we have partial matches, prefer the one with the longest hash (most specific)
+        if partial_matches:
+            partial_matches.sort(key=lambda x: x[1], reverse=True)
+            # Try each partial match, verify it's a GGUF
+            for blob_file, _ in partial_matches:
+                if verify_gguf_file(blob_file):
+                    print(f"Found and verified partial matching blob file: {blob_file.name}")
                     return blob_file
+            # If none are valid GGUF, use the best match anyway (might still work)
+            best_match = partial_matches[0][0]
+            print(f"Found partial matching blob file: {best_match.name} (best of {len(partial_matches)} matches, not verified as GGUF)")
+            return best_match
+        
+        print(f"Warning: Could not find blob file matching hash {hash_clean[:16]}...")
     
     # Fallback: Find the largest file in the blobs directory
     # Model files are typically the largest files (> 50MB for small models, > 100MB for larger ones)
@@ -202,7 +282,10 @@ def find_model_file(model_name: str, ollama_models_dir: Path) -> Optional[Path]:
     min_size = 50 * 1024 * 1024  # 50MB minimum
     
     if not model_blob_hash:
-        print(f"Could not extract blob hash from manifest, using size-based search...")
+        print(f"⚠️  Could not extract blob hash from manifest.")
+        print(f"   This means we can't identify the exact blob file for '{model_name}'.")
+        print(f"   Falling back to size-based search (may pick wrong file if multiple models exist).")
+        print(f"   Consider using HuggingFace download instead for more reliable results.\n")
     
     # Sort by size and check if files are valid GGUF
     valid_gguf_files = []
@@ -228,9 +311,12 @@ def find_model_file(model_name: str, ollama_models_dir: Path) -> Optional[Path]:
         largest_file = valid_gguf_files[0][0]
         largest_size = valid_gguf_files[0][1]
         print(f"Found verified GGUF file: {largest_file.name} ({largest_size / (1024**3):.2f} GB)")
+        print(f"⚠️  Warning: Using size-based selection - this may not be the correct file for '{model_name}'")
+        print(f"   If this is wrong, try downloading from HuggingFace instead.")
     elif largest_file:
         print(f"Found potential model file: {largest_file.name} ({largest_size / (1024**3):.2f} GB)")
-        print(f"Note: File format will be verified after copying")
+        print(f"⚠️  Warning: File not verified as GGUF and may not be correct for '{model_name}'")
+        print(f"   File format will be verified after copying.")
     else:
         print(f"Warning: No model file found (searched for files > {min_size / (1024**2):.0f} MB)")
     
@@ -394,22 +480,68 @@ def download_model(model_name: str = "gemma3:1b", save_name: Optional[str] = Non
             print(f"Models directory: {MODELS_DIR}\n")
             
             # Check if Ollama server is accessible (local or remote)
+            ollama_connected = False
+            original_ollama_url = OLLAMA_BASE_URL
+            
             try:
                 response = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
                 if response.status_code == 200:
                     print(f"✓ Connected to Ollama server at {OLLAMA_BASE_URL}")
+                    ollama_connected = True
                 else:
                     raise Exception(f"Ollama returned status {response.status_code}")
             except Exception as e:
-                if source == "ollama":
+                # If local Ollama failed and we're in auto mode, try to find/use remote Ollama
+                if source == "auto" and (OLLAMA_BASE_URL.startswith("http://localhost") or 
+                                         OLLAMA_BASE_URL.startswith("http://127.0.0.1")):
+                    print(f"⚠️  Local Ollama server not available: {e}")
+                    
+                    # Try remote Ollama server if configured via environment variable
+                    remote_ollama = os.getenv("OLLAMA_REMOTE_URL")
+                    if remote_ollama and not remote_ollama.startswith("http://localhost") and not remote_ollama.startswith("http://127.0.0.1"):
+                        if remote_ollama != OLLAMA_BASE_URL:  # Don't try the same URL again
+                            print(f"Trying configured remote Ollama server: {remote_ollama}...")
+                            try:
+                                response = requests.get(f"{remote_ollama}/api/tags", timeout=5)
+                                if response.status_code == 200:
+                                    print(f"✓ Connected to remote Ollama server at {remote_ollama}")
+                                    OLLAMA_BASE_URL = remote_ollama
+                                    ollama_connected = True
+                                else:
+                                    raise Exception(f"Remote Ollama returned status {response.status_code}")
+                            except Exception as remote_e:
+                                print(f"  Remote Ollama also unavailable: {remote_e}")
+                    
+                    # Try Ollama cloud API as fallback
+                    if not ollama_connected:
+                        print(f"Trying Ollama cloud API: https://ollama.com/api...")
+                        try:
+                            response = requests.get("https://ollama.com/api/tags", timeout=5)
+                            if response.status_code == 200:
+                                print(f"✓ Connected to Ollama cloud API")
+                                OLLAMA_BASE_URL = "https://ollama.com"
+                                ollama_connected = True
+                            else:
+                                raise Exception(f"Ollama cloud API returned status {response.status_code}")
+                        except Exception as cloud_e:
+                            print(f"  Ollama cloud API also unavailable: {cloud_e}")
+                    
+                    if not ollama_connected:
+                        print(f"⚠️  No Ollama servers available (local, remote, or cloud)")
+                        print(f"Falling back to HuggingFace download...\n")
+                        return download_from_huggingface(model_name, save_name)
+                elif source == "ollama":
                     print(f"❌ Error: Cannot connect to Ollama server: {e}")
                     print(f"\nTo use Ollama:")
-                    print(f"1. Install Ollama: https://ollama.com/download")
+                    print(f"1. Install Ollama locally: https://ollama.com/download")
                     print(f"2. Start Ollama server: ollama serve")
-                    print(f"3. Or use a remote Ollama server by setting OLLAMA_BASE_URL")
+                    print(f"3. Or use a remote Ollama server:")
+                    print(f"   - Set OLLAMA_BASE_URL environment variable to remote URL")
+                    print(f"   - Example: export OLLAMA_BASE_URL=http://your-ollama-server:11434")
+                    print(f"4. Or use Ollama cloud API: https://ollama.com/api")
                     return None
                 else:
-                    # Auto mode: fallback to HuggingFace
+                    # Auto mode but not localhost - already tried, fallback to HuggingFace
                     print(f"⚠️  Ollama server not available: {e}")
                     print(f"Falling back to HuggingFace download...\n")
                     return download_from_huggingface(model_name, save_name)
