@@ -286,8 +286,7 @@ def find_model_file(model_name: str, ollama_models_dir: Path) -> Optional[Path]:
         print(f"[ERROR] Could not extract blob hash from manifest for '{model_name}'.")
         print(f"   This means we cannot identify the exact blob file needed.")
         print(f"   Ollama stores models in a proprietary format and requires the manifest hash to locate them.")
-        print(f"\n[INFO] Solution: Download the model directly from HuggingFace instead.")
-        print(f"   The download script will automatically fall back to HuggingFace if Ollama extraction fails.")
+        print(f"\n[INFO] Make sure the model is available in Ollama storage.")
         return None
     
     # Get all blob files
@@ -403,14 +402,7 @@ def copy_model_to_local(model_name: str, source_path: Path, dest_name: Optional[
             print(f"\n[WARNING] Important: Ollama stores models in a proprietary format.")
             print(f"   Ollama does NOT provide direct GGUF file downloads.")
             print(f"   The blob files in Ollama's storage cannot be used directly with llama-cpp-python.")
-            print(f"\n✅ Solution: Download GGUF models directly from their original sources")
-            print(f"\nRecommended approach:")
-            print(f"1. Visit HuggingFace and search for GGUF versions of your model:")
-            print(f"   https://huggingface.co/models?search=gguf")
-            print(f"2. For gemma3:1b, try: https://huggingface.co/google/gemma-2-1b-it")
-            print(f"3. Download the .gguf file and place it in: {MODELS_DIR}")
-            print(f"\nOr use TheBloke's quantized models (many GGUF options):")
-            print(f"   https://huggingface.co/TheBloke")
+            print(f"\nSolution: Ensure the model is available in Ollama storage.")
             
             # Clean up the invalid file
             try:
@@ -426,279 +418,15 @@ def copy_model_to_local(model_name: str, source_path: Path, dest_name: Optional[
         return None
 
 
-def download_from_kaggle(model_path: str, save_name: Optional[str] = None) -> Optional[Path]:
-    """
-    Download model from Kaggle
-    
-    Args:
-        model_path: Kaggle model path (e.g., "google/gemma-3/gguf")
-        save_name: Optional custom name for the saved file
-    
-    Returns:
-        Path to the saved model file, or None if failed
-    """
-    try:
-        try:
-            from kaggle.api.kaggle_api_extended import KaggleApi
-        except ImportError:
-            print("[ERROR] Kaggle API not installed. Install it with: pip install kaggle")
-            print("   You also need to set up Kaggle credentials:")
-            print("   1. Go to https://www.kaggle.com/settings and create an API token")
-            print("   2. Place kaggle.json in ~/.kaggle/ (or set KAGGLE_USERNAME and KAGGLE_KEY env vars)")
-            return None
-        
-        MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        
-        if save_name is None:
-            # Extract model name from path (e.g., "google/gemma-3/gguf" -> "gemma-3.gguf")
-            parts = model_path.split('/')
-            model_name = parts[-1] if parts else "model"
-            save_name = f"{model_name}.gguf" if not save_name.endswith('.gguf') else model_name
-        
-        dest_path = MODELS_DIR / save_name
-        
-        print(f"Downloading from Kaggle: {model_path}")
-        print(f"This may take a while depending on model size...")
-        
-        # Initialize Kaggle API
-        api = KaggleApi()
-        api.authenticate()
-        
-        # Parse model path: "google/gemma-3/gguf" -> owner="google", model="gemma-3", version="gguf"
-        path_parts = model_path.split('/')
-        if len(path_parts) < 2:
-            raise Exception(f"Invalid Kaggle model path format. Expected: owner/model/version, got: {model_path}")
-        
-        owner = path_parts[0]
-        model_slug = path_parts[1]
-        version = path_parts[2] if len(path_parts) > 2 else None
-        
-        # List files in the model version
-        print(f"Listing files in Kaggle model: {owner}/{model_slug}...")
-        if version:
-            files = api.model_version_list_files(owner=owner, model=model_slug, version_number=version)
-        else:
-            # Get latest version
-            versions = api.model_version_list(owner=owner, model=model_slug)
-            if not versions:
-                raise Exception(f"No versions found for model {owner}/{model_slug}")
-            version = versions[0].versionNumber
-            files = api.model_version_list_files(owner=owner, model=model_slug, version_number=version)
-        
-        # Find GGUF files
-        gguf_files = [f for f in files if f.name.endswith('.gguf')]
-        
-        if not gguf_files:
-            raise Exception(f"No .gguf files found in Kaggle model {model_path}")
-        
-        # Prefer quantized models (Q4, Q5, Q6, Q8)
-        def sort_key(file_info):
-            filename = file_info.name.lower()
-            if 'q4_k_m' in filename:
-                return (0, filename)
-            elif 'q5_k_m' in filename:
-                return (1, filename)
-            elif 'q6_k' in filename:
-                return (2, filename)
-            elif 'q8_0' in filename:
-                return (3, filename)
-            else:
-                return (4, filename)
-        
-        gguf_files.sort(key=sort_key)
-        selected_file = gguf_files[0]
-        
-        print(f"Found {len(gguf_files)} GGUF file(s), downloading: {selected_file.name}")
-        
-        # Download the file - Kaggle API might use different method names
-        try:
-            # Try model_version_download_file first
-            api.model_version_download_file(
-                owner=owner,
-                model=model_slug,
-                version_number=version,
-                file_name=selected_file.name,
-                path=str(MODELS_DIR)
-            )
-        except AttributeError:
-            # Fallback: try downloading as a dataset if model API doesn't work
-            # Some Kaggle models are exposed as datasets
-            try:
-                api.dataset_download_file(
-                    dataset=f"{owner}/{model_slug}",
-                    file_name=selected_file.name,
-                    path=str(MODELS_DIR)
-                )
-            except Exception as e:
-                raise Exception(f"Failed to download from Kaggle. Error: {e}")
-        
-        # Move/rename the downloaded file
-        downloaded_path = MODELS_DIR / selected_file.name
-        if downloaded_path.exists() and downloaded_path.name != save_name:
-            shutil.move(str(downloaded_path), str(dest_path))
-        else:
-            dest_path = downloaded_path
-        
-        print(f"[OK] Model downloaded to: {dest_path}")
-        return dest_path
-        
-    except Exception as e:
-        print(f"[ERROR] Error downloading from Kaggle: {e}")
-        print(f"\nTroubleshooting:")
-        print(f"1. Make sure kaggle package is installed: pip install kaggle")
-        print(f"2. Set up Kaggle credentials:")
-        print(f"   - Go to https://www.kaggle.com/settings")
-        print(f"   - Create an API token (downloads kaggle.json)")
-        print(f"   - Place kaggle.json in ~/.kaggle/ (Linux/Mac) or C:\\Users\\<user>\\.kaggle\\ (Windows)")
-        print(f"   - Or set KAGGLE_USERNAME and KAGGLE_KEY environment variables")
-        print(f"3. Verify the model path is correct: {model_path}")
-        print(f"4. Check if you have access to the model (some models require acceptance of terms)")
-        return None
-
-
-def convert_ollama_to_huggingface(model_name: str) -> str:
-    """Convert Ollama model name to HuggingFace repo name"""
-    # Common mappings for Ollama model names to HuggingFace repos
-    mappings = {
-        "gemma3:1b": "google/gemma-2-1b-it",
-        "gemma3:2b": "google/gemma-2-2b-it",
-        "gemma3:8b": "google/gemma-2-8b-it",
-        "gemma3:27b": "google/gemma-2-27b-it",
-        "gemma2:1b": "google/gemma-2-1b-it",
-        "gemma2:2b": "google/gemma-2-2b-it",
-        "gemma2:8b": "google/gemma-2-8b-it",
-        "gemma2:27b": "google/gemma-2-27b-it",
-        "llama3.2:1b": "meta-llama/Llama-3.2-1B-Instruct",
-        "llama3.2:3b": "meta-llama/Llama-3.2-3B-Instruct",
-        "llama3.1:8b": "meta-llama/Llama-3.1-8B-Instruct",
-        "llama3.1:70b": "meta-llama/Llama-3.1-70B-Instruct",
-        "llama3:8b": "meta-llama/Llama-3-8B-Instruct",
-        "llama3:70b": "meta-llama/Llama-3-70B-Instruct",
-        "mistral:7b": "mistralai/Mistral-7B-Instruct-v0.2",
-        "mixtral:8x7b": "mistralai/Mixtral-8x7B-Instruct-v0.1",
-    }
-    
-    # Check if we have a direct mapping
-    if model_name in mappings:
-        return mappings[model_name]
-    
-    # Try to infer from model name pattern
-    # gemma3:1b -> google/gemma-2-1b-it
-    if model_name.startswith("gemma"):
-        parts = model_name.replace(":", "-").split("-")
-        if len(parts) >= 2:
-            size = parts[-1]  # e.g., "1b", "2b", "8b"
-            return f"google/gemma-2-{size}-it"
-    
-    # llama3.2:1b -> meta-llama/Llama-3.2-1B-Instruct
-    if model_name.startswith("llama"):
-        parts = model_name.replace(":", "-").split("-")
-        if len(parts) >= 2:
-            version = parts[0].replace("llama", "Llama")  # llama3.2 -> Llama-3.2
-            size = parts[-1].upper()  # 1b -> 1B
-            return f"meta-llama/{version}-{size}-Instruct"
-    
-    # If no mapping found, try to clean the name and search
-    # Replace colons with dashes and try common patterns
-    cleaned = model_name.replace(":", "-").replace(".", "-")
-    return cleaned  # Return cleaned name, caller can handle if it fails
-
-
-def download_from_huggingface(model_name: str, save_name: Optional[str] = None) -> Optional[Path]:
-    """
-    Download GGUF model directly from HuggingFace
-    
-    Args:
-        model_name: Model name (e.g., "gemma-2-1b-it" or HuggingFace repo path)
-        save_name: Optional custom name for the saved file
-    
-    Returns:
-        Path to the saved model file, or None if failed
-    """
-    try:
-        from huggingface_hub import hf_hub_download
-    except ImportError:
-        print("Error: huggingface_hub not installed. Install it with: pip install huggingface_hub")
-        return None
-    
-    MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    
-    if save_name is None:
-        save_name = model_name.replace(":", "-").replace("/", "-") + ".gguf"
-    
-    dest_path = MODELS_DIR / save_name
-    
-    print(f"Downloading {model_name} from HuggingFace...")
-    print(f"This may take a while depending on model size...")
-    
-    try:
-        # List files in the repo to find GGUF files
-        from huggingface_hub import list_repo_files
-        
-        print(f"Searching for GGUF files in {model_name}...")
-        repo_files = list_repo_files(repo_id=model_name, repo_type="model")
-        
-        # Find all .gguf files
-        gguf_files = [f for f in repo_files if f.endswith('.gguf')]
-        
-        if not gguf_files:
-            raise Exception(f"No .gguf files found in repository {model_name}")
-        
-        # Prefer quantized models (Q4, Q5, Q6, Q8) or the largest file
-        # Sort by preference: Q4_K_M > Q5_K_M > Q6_K > Q8_0 > others
-        def sort_key(filename):
-            filename_lower = filename.lower()
-            if 'q4_k_m' in filename_lower:
-                return (0, filename)
-            elif 'q5_k_m' in filename_lower:
-                return (1, filename)
-            elif 'q6_k' in filename_lower:
-                return (2, filename)
-            elif 'q8_0' in filename_lower:
-                return (3, filename)
-            else:
-                return (4, filename)
-        
-        gguf_files.sort(key=sort_key)
-        selected_file = gguf_files[0]
-        
-        print(f"Found {len(gguf_files)} GGUF file(s), downloading: {selected_file}")
-        
-        # Download the selected GGUF file
-        downloaded_path = hf_hub_download(
-            repo_id=model_name,
-            filename=selected_file,
-            local_dir=str(MODELS_DIR),
-            local_dir_use_symlinks=False
-        )
-        
-        # Rename to desired name if different
-        downloaded_path = Path(downloaded_path)
-        if downloaded_path.name != save_name:
-            shutil.move(str(downloaded_path), str(dest_path))
-        else:
-            dest_path = downloaded_path
-        
-        print(f"[OK] Model downloaded to: {dest_path}")
-        return dest_path
-    except Exception as e:
-        print(f"Error downloading from HuggingFace: {e}")
-        print(f"\nYou may need to:")
-        print(f"1. Specify the full HuggingFace repo path (e.g., 'google/gemma-2-1b-it')")
-        print(f"2. Or download manually from: https://huggingface.co/models?search=gguf")
-        return None
-
-
 def download_model(model_name: str = "gemma3:1b", save_name: Optional[str] = None, 
                    source: str = "auto", ollama_url: Optional[str] = None) -> Optional[Path]:
     """
     Download model weights and save locally
     
     Args:
-        model_name: Name of the model (e.g., "gemma3:1b" for Ollama, or HuggingFace repo path)
+        model_name: Name of the model (e.g., "gemma3:1b" for Ollama)
         save_name: Optional custom name for the saved file
-        source: Source to download from - "auto" (try Ollama first, fallback to Kaggle/HuggingFace),
-                "ollama" (Ollama only), "kaggle" (Kaggle only), or "huggingface" (HuggingFace only)
+        source: Source to download from - "auto" (try Ollama first) or "ollama" (Ollama only)
         ollama_url: Optional custom Ollama server URL (default: http://localhost:11434)
                     Can be a remote server like http://remote-server:11434
     
@@ -712,14 +440,7 @@ def download_model(model_name: str = "gemma3:1b", save_name: Optional[str] = Non
         OLLAMA_BASE_URL = ollama_url
     
     try:
-        if source == "huggingface":
-            return download_from_huggingface(model_name, save_name)
-        
-        if source == "kaggle":
-            # For Kaggle, model_name should be the full path like "google/gemma-3/gguf"
-            return download_from_kaggle(model_name, save_name)
-        
-        # Try Ollama first (if source is "auto" or "ollama")
+        # Only Ollama is supported now
         if source in ["auto", "ollama"]:
             print(f"Attempting to download via Ollama API...")
             print(f"Ollama URL: {OLLAMA_BASE_URL}")
@@ -774,17 +495,9 @@ def download_model(model_name: str = "gemma3:1b", save_name: Optional[str] = Non
                     
                     if not ollama_connected:
                         print(f"[WARNING] No Ollama servers available (local, remote, or cloud)")
-                        print(f"Falling back to Kaggle download...\n")
-                        # Try Kaggle first (for gemma-3), then HuggingFace
-                        kaggle_path = "google/gemma-3/gguf"
-                        result = download_from_kaggle(kaggle_path, save_name)
-                        if result:
-                            return result
-                        print(f"Kaggle download failed, trying HuggingFace...\n")
-                        hf_repo = convert_ollama_to_huggingface(model_name)
-                        if hf_repo != model_name:
-                            print(f"Converting '{model_name}' to HuggingFace repo: {hf_repo}")
-                        return download_from_huggingface(hf_repo, save_name)
+                        print(f"\n[ERROR] Cannot download from external sources (requires API access).")
+                        print(f"   Please ensure the model is available in Ollama storage.")
+                        return None
                 elif source == "ollama":
                     print(f"[ERROR] Cannot connect to Ollama server: {e}")
                     print(f"\nTo use Ollama:")
@@ -796,16 +509,13 @@ def download_model(model_name: str = "gemma3:1b", save_name: Optional[str] = Non
                     print(f"4. Or use Ollama cloud API: https://ollama.com/api")
                     return None
                 else:
-                    # Auto mode but not localhost - already tried, fallback to HuggingFace
+                    # Auto mode but not localhost - cannot access blob storage on remote server
                     print(f"[WARNING] Ollama server not available: {e}")
-                    print(f"Falling back to HuggingFace download...\n")
-                    hf_repo = convert_ollama_to_huggingface(model_name)
-                    if hf_repo != model_name:
-                        print(f"Converting '{model_name}' to HuggingFace repo: {hf_repo}")
-                    return download_from_huggingface(hf_repo, save_name)
+                    print(f"\n[ERROR] Cannot download from external sources (requires API access).")
+                    print(f"   Please ensure the model is available in Ollama storage.")
+                    return None
             
-            print(f"Note: Ollama stores models in a proprietary format.")
-            print(f"If extraction fails, we'll suggest HuggingFace as an alternative.\n")
+            print(f"Note: Ollama stores models in a proprietary format.\n")
             
             # Check if model is available
             available_models = get_ollama_models()
@@ -815,33 +525,17 @@ def download_model(model_name: str = "gemma3:1b", save_name: Optional[str] = Non
                 print(f"\nPulling model from Ollama API...")
                 if not pull_model(model_name):
                     if source == "auto":
-                        print(f"\n[WARNING] Failed to pull from Ollama, falling back to Kaggle...\n")
-                        # Try Kaggle first (for gemma-3), then HuggingFace
-                        kaggle_path = "google/gemma-3/gguf"
-                        result = download_from_kaggle(kaggle_path, save_name)
-                        if result:
-                            return result
-                        print(f"Kaggle download failed, trying HuggingFace...\n")
-                        hf_repo = convert_ollama_to_huggingface(model_name)
-                        if hf_repo != model_name:
-                            print(f"Converting '{model_name}' to HuggingFace repo: {hf_repo}")
-                        return download_from_huggingface(hf_repo, save_name)
+                        print(f"\n[ERROR] Cannot download from external sources (requires API access).")
+                        print(f"   Please ensure the model is available in Ollama storage.")
+                        return None
                     return None
                 # Refresh list
                 available_models = get_ollama_models()
                 if model_name not in available_models:
                     if source == "auto":
-                        print(f"\n[WARNING] Model still not available, falling back to Kaggle...\n")
-                        # Try Kaggle first (for gemma-3), then HuggingFace
-                        kaggle_path = "google/gemma-3/gguf"
-                        result = download_from_kaggle(kaggle_path, save_name)
-                        if result:
-                            return result
-                        print(f"Kaggle download failed, trying HuggingFace...\n")
-                        hf_repo = convert_ollama_to_huggingface(model_name)
-                        if hf_repo != model_name:
-                            print(f"Converting '{model_name}' to HuggingFace repo: {hf_repo}")
-                        return download_from_huggingface(hf_repo, save_name)
+                        print(f"\n[ERROR] Cannot download from external sources (requires API access).")
+                        print(f"   Please ensure the model is available in Ollama storage.")
+                        return None
                     print(f"Error: Model '{model_name}' still not available after pulling")
                     return None
         
@@ -856,22 +550,18 @@ def download_model(model_name: str = "gemma3:1b", save_name: Optional[str] = Non
                 print("    2. Ollama is storing models in an unexpected location")
                 print("    3. Ollama service needs to be restarted")
                 if source == "auto":
-                    print(f"\nFalling back to HuggingFace download...\n")
-                    hf_repo = convert_ollama_to_huggingface(model_name)
-                    if hf_repo != model_name:
-                        print(f"Converting '{model_name}' to HuggingFace repo: {hf_repo}")
-                    return download_from_huggingface(hf_repo, save_name)
+                    print(f"\n[ERROR] Cannot download from external sources (requires API access).")
+                    print(f"   Please ensure the model is available in Ollama storage.")
+                    return None
                 return None
             
             model_file = find_model_file(model_name, ollama_models_dir)
             if model_file is None:
                 print("Error: Could not find model file in Ollama storage")
                 if source == "auto":
-                    print(f"Falling back to HuggingFace...\n")
-                    hf_repo = convert_ollama_to_huggingface(model_name)
-                    if hf_repo != model_name:
-                        print(f"Converting '{model_name}' to HuggingFace repo: {hf_repo}")
-                    return download_from_huggingface(hf_repo, save_name)
+                    print(f"\n[ERROR] Cannot download from external sources (requires API access).")
+                    print(f"   Please ensure the model is available in Ollama storage.")
+                    return None
                 return None
             
             print(f"Found model file: {model_file} ({model_file.stat().st_size / (1024**2):.1f} MB)")
@@ -885,27 +575,17 @@ def download_model(model_name: str = "gemma3:1b", save_name: Optional[str] = Non
                 return saved_path
             else:
                 if source == "auto":
-                    print(f"\n[WARNING] Failed to extract GGUF from Ollama, falling back to Kaggle...\n")
-                    # Try Kaggle first (for gemma-3), then HuggingFace
-                    kaggle_path = "google/gemma-3/gguf"
-                    result = download_from_kaggle(kaggle_path, save_name)
-                    if result:
-                        return result
-                    print(f"Kaggle download failed, trying HuggingFace...\n")
-                    hf_repo = convert_ollama_to_huggingface(model_name)
-                    if hf_repo != model_name:
-                        print(f"Converting '{model_name}' to HuggingFace repo: {hf_repo}")
-                    return download_from_huggingface(hf_repo, save_name)
+                    print(f"\n[ERROR] Cannot download from external sources (requires API access).")
+                    print(f"   Please ensure the model is available in Ollama storage.")
+                    return None
                 return None
         else:
             # Remote Ollama server - can't access blob storage directly
             print(f"[WARNING] Remote Ollama server detected: {OLLAMA_BASE_URL}")
             print(f"Cannot access blob storage on remote server.")
-            print(f"Falling back to HuggingFace download...\n")
-            hf_repo = convert_ollama_to_huggingface(model_name)
-            if hf_repo != model_name:
-                print(f"Converting '{model_name}' to HuggingFace repo: {hf_repo}")
-            return download_from_huggingface(hf_repo, save_name)
+            print(f"\n[ERROR] Cannot download from external sources (requires API access).")
+            print(f"   Please ensure the model is available in Ollama storage.")
+            return None
     finally:
         # Restore original URL
         OLLAMA_BASE_URL = original_url

@@ -1360,18 +1360,18 @@ class TelemetryGUI:
                     
                     with gr.Row():
                         download_source = gr.Radio(
-                            choices=["auto", "ollama", "huggingface"],
+                            choices=["auto", "ollama"],
                             value="auto",
                             label="Download Source",
-                            info="Auto: Try Ollama first, fallback to HuggingFace"
+                            info="Auto or Ollama only"
                         )
                     
                     with gr.Row():
                         download_model_input = gr.Textbox(
                             value="gemma3:1b",
                             label="Model Name",
-                            placeholder="Ollama: gemma3:1b, llama3.2 | HuggingFace: google/gemma-2-1b-it",
-                            info="Ollama format: 'model:tag' | HuggingFace format: 'org/model-name'"
+                            placeholder="Ollama: gemma3:1b, llama3.2",
+                            info="Ollama format: 'model:tag' (e.g., gemma3:1b, llama3.2)"
                         )
                         download_btn = gr.Button("Download Model", variant="primary", elem_classes=["icon-download"])
                     
@@ -1395,7 +1395,7 @@ class TelemetryGUI:
                             from download_model import download_model, get_ollama_models
                             
                             # Show initial status
-                            source_name = "Ollama" if source == "ollama" else ("HuggingFace" if source == "huggingface" else "Auto (Ollama → HuggingFace)")
+                            source_name = "Ollama" if source == "ollama" else "Auto (Ollama)"
                             status_msg = f"{self._icon('spinner')} **Downloading model:** `{model_name}`\n"
                             status_msg += f"**Source:** {source_name}\n\n"
                             status_msg += "This may take several minutes depending on model size...\n"
@@ -1409,7 +1409,7 @@ class TelemetryGUI:
                                 except Exception as e:
                                     if source == "ollama":
                                         return f"{self._icon('exclamation-triangle')} **Error:** Cannot connect to Ollama: {str(e)}\n\nMake sure Ollama is running: `ollama serve`", gr.update()
-                                    # In auto mode, this is fine - will fallback to HuggingFace
+                                    # In auto mode, this is fine - will show error
                             
                             # Download the model (this may take a while)
                             result = download_model(model_name, save_name=None, source=source)
@@ -1430,10 +1430,8 @@ class TelemetryGUI:
                                 error_msg = f"{self._icon('times-circle')} **Error:** Failed to download model `{model_name}`.\n\n"
                                 if source == "ollama":
                                     error_msg += "Please check:\n- Ollama is running (`ollama serve`)\n- Model name is correct\n- You have enough disk space"
-                                elif source == "huggingface":
-                                    error_msg += "Please check:\n- Model name is correct (use format: 'org/model-name')\n- You have internet connection\n- You have enough disk space"
                                 else:
-                                    error_msg += "Both Ollama and HuggingFace downloads failed. Please check your connection and model name."
+                                    error_msg += "Please check:\n- Ollama is running (`ollama serve`)\n- Model name is correct\n- You have enough disk space"
                                 return error_msg, gr.update()
                         
                         except ImportError as e:
