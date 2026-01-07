@@ -628,7 +628,14 @@ class TelemetryGUI:
                     )
                     if llm_insights and str(llm_insights).strip() and str(llm_insights).strip() != 'Error: Empty response from model':
                         # Only add if it's a valid response (not empty and not an error message)
-                        result += str(llm_insights).strip() + "\n\n"
+                        # Ensure it's formatted as regular paragraphs, not code blocks
+                        insights_text = str(llm_insights).strip()
+                        # Remove any leading/trailing code block markers
+                        insights_text = insights_text.lstrip('```').rstrip('```')
+                        # Ensure it starts with regular text (not indented which markdown interprets as code)
+                        if insights_text.startswith(' ') or insights_text.startswith('\t'):
+                            insights_text = insights_text.lstrip()
+                        result += insights_text + "\n\n"
                     else:
                         # Show helpful error message instead of empty boxes
                         error_msg = str(llm_insights).strip() if llm_insights and 'Error' in str(llm_insights) else 'Empty response'

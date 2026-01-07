@@ -561,24 +561,33 @@ Keep the response concise and actionable."""
         context = self._build_comprehensive_context(telemetry_data, analysis, system_info)
         
         context_str = json.dumps(context, indent=1, default=str)
+        # Limit context size for small models - they can't handle too much data
+        if len(context_str) > 1200:
+            context_str = context_str[:1200] + "... (truncated for model size)"
         
-        prompt = f"""Analyze system performance based on telemetry data:
+        prompt = f"""You are analyzing system telemetry data. Write a clear analysis in plain text paragraphs (not JSON, not code blocks).
 
-Data:
+Telemetry Data:
 {context_str}
 
-Provide: 1) System health assessment 2) Concerning patterns 3) Optimization recommendations 4) Resource utilization analysis. Keep response concise."""
+Your response should include:
+1. Overall system health status (good/moderate/needs attention)
+2. Any concerning patterns or anomalies you notice
+3. Specific optimization recommendations if needed
+4. Brief summary of resource utilization (CPU, memory, disk)
+
+Format your response as clear paragraphs. Do not use JSON format. Do not use code blocks. Write naturally."""
 
         try:
             if self.provider == "llamacpp" and self.llama_cpp_model:
                 # Use llama-cpp-python for local inference (thread-safe with lock)
-                full_prompt = f"You are a system performance analyst.\n\n{prompt}"
+                # Don't add extra prefix - the prompt already has clear instructions
                 with self._llm_lock:  # Prevent concurrent access to model
                     response = self.llama_cpp_model(
-                        full_prompt,
-                        max_tokens=1000,
+                        prompt,
+                        max_tokens=400,  # Reasonable limit for small models
                         temperature=0.7,
-                        stop=["\n\n\n", "Human:", "User:"],
+                        stop=["\n\n\n", "Human:", "User:"],  # Basic stop sequences only
                         echo=False
                     )
                 # Handle llama-cpp-python response format (same as Linux - keep it simple)
