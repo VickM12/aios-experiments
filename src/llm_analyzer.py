@@ -128,7 +128,10 @@ class LLMAnalyzer:
                 else:
                     # Look in models directory
                     models_dir = project_root / "models"
-                    model_path = models_dir / self.model
+                    # Convert model name: replace colons with hyphens (gemma3:1b -> gemma3-1b)
+                    # This matches the naming convention used by the download script
+                    model_name = self.model.replace(":", "-")
+                    model_path = models_dir / model_name
                 
                 # Resolve to absolute path for better error messages
                 model_path = model_path.resolve()
@@ -144,10 +147,19 @@ class LLMAnalyzer:
                             if not model_path.suffix:
                                 model_path = model_path.with_suffix('.gguf')
                     
+                    # If still not found, try the original model name (in case user has file with colon)
+                    if not model_path.exists() and ":" in self.model:
+                        original_model_path = models_dir / self.model
+                        if not original_model_path.suffix or original_model_path.suffix != '.gguf':
+                            original_model_path = original_model_path.with_suffix('.gguf')
+                        if original_model_path.exists():
+                            model_path = original_model_path.resolve()
+                    
                     if not model_path.exists():
                         print(f"Warning: Model file not found at {model_path}")
                         print(f"  Searched in: {project_root / 'models'}")
                         print(f"  Model name: {self.model}")
+                        print(f"  Tried: {model_name}.gguf (converted from {self.model})")
                         print(f"  Please download the model first using: python scripts/download_model.py")
                         self.client = None
                         self.llama_cpp_model = None
@@ -158,7 +170,7 @@ class LLMAnalyzer:
                 try:
                     self.llama_cpp_model = Llama(
                         model_path=str(model_path),
-                        n_ctx=4096,  # Context window
+                        n_ctx=32768,  # Context window - match model's training context to avoid warnings
                         n_threads=4,  # Number of threads
                         verbose=False
                     )
@@ -323,7 +335,10 @@ class LLMAnalyzer:
                 else:
                     # Look in models directory
                     models_dir = project_root / "models"
-                    model_path = models_dir / self.model
+                    # Convert model name: replace colons with hyphens (gemma3:1b -> gemma3-1b)
+                    # This matches the naming convention used by the download script
+                    model_name = self.model.replace(":", "-")
+                    model_path = models_dir / model_name
                 
                 # Resolve to absolute path for better error messages
                 model_path = model_path.resolve()
@@ -339,10 +354,19 @@ class LLMAnalyzer:
                             if not model_path.suffix:
                                 model_path = model_path.with_suffix('.gguf')
                     
+                    # If still not found, try the original model name (in case user has file with colon)
+                    if not model_path.exists() and ":" in self.model:
+                        original_model_path = models_dir / self.model
+                        if not original_model_path.suffix or original_model_path.suffix != '.gguf':
+                            original_model_path = original_model_path.with_suffix('.gguf')
+                        if original_model_path.exists():
+                            model_path = original_model_path.resolve()
+                    
                     if not model_path.exists():
                         print(f"Warning: Model file not found at {model_path}")
                         print(f"  Searched in: {project_root / 'models'}")
                         print(f"  Model name: {self.model}")
+                        print(f"  Tried: {model_name}.gguf (converted from {self.model})")
                         print(f"  Please download the model first using: python scripts/download_model.py")
                         self.client = None
                         self.llama_cpp_model = None
@@ -353,7 +377,7 @@ class LLMAnalyzer:
                 try:
                     self.llama_cpp_model = Llama(
                         model_path=str(model_path),
-                        n_ctx=4096,  # Context window
+                        n_ctx=32768,  # Context window - match model's training context to avoid warnings
                         n_threads=4,  # Number of threads
                         verbose=False
                     )
@@ -450,7 +474,7 @@ class LLMAnalyzer:
         
         context_str = json.dumps(context, indent=1, default=str)
         
-        prompt = f"""You are analyzing system telemetry data. The system has detected {anomaly_data.get('anomalies_detected', 0)} anomalies out of {len(telemetry_data)} data points.
+        prompt = f"""You are a system monitoring expert analyzing telemetry data. The system has detected {anomaly_data.get('anomalies_detected', 0)} anomalies out of {len(telemetry_data)} data points.
 
 Telemetry Data:
 {context_str}
@@ -466,7 +490,8 @@ Keep the response concise and actionable."""
         try:
             if self.provider == "llamacpp" and self.llama_cpp_model:
                 # Use llama-cpp-python for local inference (thread-safe with lock)
-                full_prompt = f"You are a system monitoring expert analyzing telemetry data.\n\n{prompt}"
+                # Note: prompt already includes system role
+                full_prompt = prompt
                 with self._llm_lock:  # Prevent concurrent access to model
                     response = self.llama_cpp_model(
                         full_prompt,
@@ -488,7 +513,7 @@ Keep the response concise and actionable."""
                     import ollama
                     response = ollama.generate(
                         model=self.model,
-                        prompt=f"You are a system monitoring expert analyzing telemetry data.\n\n{prompt}",
+                        prompt=prompt,  # prompt already includes system role
                         options={
                             "temperature": 0.7,
                             "num_predict": 1000
@@ -508,7 +533,7 @@ Keep the response concise and actionable."""
                     f"{self.ollama_base_url}/api/generate",
                     json={
                         "model": self.model,
-                        "prompt": f"You are a system monitoring expert analyzing telemetry data.\n\n{prompt}",
+                        "prompt": prompt,  # prompt already includes system role
                         "stream": False,
                         "options": {
                             "temperature": 0.7,
@@ -560,9 +585,13 @@ Keep the response concise and actionable."""
         # Build comprehensive context
         context = self._build_comprehensive_context(telemetry_data, analysis, system_info)
         
+        # Limit context size for analysis to avoid overwhelming the model
+        # Truncate if too long (keep first 3000 chars for analysis)
         context_str = json.dumps(context, indent=1, default=str)
+        if len(context_str) > 3000:
+            context_str = context_str[:3000] + "... (truncated for performance)"
         
-        prompt = f"""Analyze system performance based on telemetry data:
+        prompt = f"""You are a system monitoring expert analyzing telemetry data. Analyze system performance based on the telemetry data below:
 
 Data:
 {context_str}
@@ -572,7 +601,8 @@ Provide: 1) System health assessment 2) Concerning patterns 3) Optimization reco
         try:
             if self.provider == "llamacpp" and self.llama_cpp_model:
                 # Use llama-cpp-python for local inference (thread-safe with lock)
-                full_prompt = f"You are a system performance analyst.\n\n{prompt}"
+                # Note: prompt already includes system role
+                full_prompt = prompt
                 with self._llm_lock:  # Prevent concurrent access to model
                     response = self.llama_cpp_model(
                         full_prompt,
@@ -594,7 +624,7 @@ Provide: 1) System health assessment 2) Concerning patterns 3) Optimization reco
                     import ollama
                     response = ollama.generate(
                         model=self.model,
-                        prompt=f"You are a system performance analyst.\n\n{prompt}",
+                        prompt=prompt,  # prompt already includes system role
                         options={
                             "temperature": 0.7,
                             "num_predict": 1000
@@ -610,7 +640,7 @@ Provide: 1) System health assessment 2) Concerning patterns 3) Optimization reco
                     f"{self.ollama_base_url}/api/generate",
                     json={
                         "model": self.model,
-                        "prompt": f"You are a system performance analyst.\n\n{prompt}",
+                        "prompt": prompt,  # prompt already includes system role
                         "stream": False,
                         "options": {
                             "temperature": 0.7,
@@ -629,7 +659,7 @@ Provide: 1) System health assessment 2) Concerning patterns 3) Optimization reco
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[
-                        {"role": "system", "content": "You are a system performance analyst."},
+                        {"role": "system", "content": "You are a system monitoring expert analyzing telemetry data."},
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.7,
@@ -962,28 +992,31 @@ Provide: 1) System health assessment 2) Concerning patterns 3) Optimization reco
         
         # Simplify prompt for general questions without telemetry data
         if len(telemetry_data) == 0:
-            prompt = f"""You are a helpful system monitoring assistant. Answer the user's question about their device.{history_context}
+            prompt = f"""You are a system monitoring expert analyzing telemetry data. Answer the user's question about their device.{history_context}
 
 Question: {question}
 
 System Information:
 {context_str}
 
-Provide a clear, helpful answer. If you don't have specific data, provide general information about the topic."""
+Provide a clear, helpful answer. If you don't have specific data, provide general information about the topic.
+IMPORTANT: Format your response as plain markdown (not in code blocks). Use markdown formatting directly (headers, lists, bold, etc.) without wrapping in ```markdown code blocks."""
         else:
-            prompt = f"""You are a system performance analyst. Answer the user's question using the telemetry data below.{history_context}
+            prompt = f"""You are a system monitoring expert analyzing telemetry data. Answer the user's question using the telemetry data below.{history_context}
 
 Question: {question}
 
 Telemetry Data:
 {context_str}
 
-Provide a clear, accurate answer based on the data. Reference specific values when relevant. If the question refers to previous conversation, use that context to provide a more helpful answer."""
+Provide a clear, accurate answer based on the data. Reference specific values when relevant. If the question refers to previous conversation, use that context to provide a more helpful answer.
+IMPORTANT: Format your response as plain markdown (not in code blocks). Use markdown formatting directly (headers, lists, bold, etc.) without wrapping in ```markdown code blocks."""
 
         try:
             if self.provider == "llamacpp" and self.llama_cpp_model:
                 # Use llama-cpp-python for local inference (thread-safe with lock)
-                full_prompt = f"You are a helpful system monitoring assistant.\n\n{prompt}"
+                # Note: prompt already includes system role, so we don't need to add it again
+                full_prompt = prompt
                 with self._llm_lock:  # Prevent concurrent access to model
                     response = self.llama_cpp_model(
                         full_prompt,
@@ -1004,7 +1037,7 @@ Provide a clear, accurate answer based on the data. Reference specific values wh
                     f"{self.ollama_base_url}/api/generate",
                     json={
                         "model": self.model,
-                        "prompt": f"You are a helpful system monitoring assistant.\n\n{prompt}",
+                        "prompt": prompt,  # prompt already includes system role
                         "stream": False,
                         "options": {
                             "temperature": 0.7,
@@ -1023,7 +1056,7 @@ Provide a clear, accurate answer based on the data. Reference specific values wh
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[
-                        {"role": "system", "content": "You are a helpful system monitoring assistant."},
+                        {"role": "system", "content": "You are a system monitoring expert analyzing telemetry data."},
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.7,

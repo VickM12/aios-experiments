@@ -124,9 +124,19 @@ def get_model_manifest(model_name: str) -> Optional[dict]:
             # Debug: print manifest structure
             if manifest:
                 print(f"Manifest keys: {list(manifest.keys())}")
+                # Print key fields that might contain the hash
+                for key in ['digest', 'model', 'modelfile', 'model_info', 'layers', 'blobs']:
+                    if key in manifest:
+                        value = manifest[key]
+                        if isinstance(value, str) and len(value) < 500:
+                            print(f"  {key}: {value[:200]}...")
+                        elif isinstance(value, dict):
+                            print(f"  {key}: dict with keys {list(value.keys())[:10]}")
+                        elif isinstance(value, list):
+                            print(f"  {key}: list with {len(value)} items")
                 # Print the full manifest for debugging (can be verbose, but helpful)
                 import json
-                print(f"Full manifest (first 3000 chars):\n{json.dumps(manifest, indent=2)[:3000]}")
+                print(f"\nFull manifest (first 5000 chars):\n{json.dumps(manifest, indent=2)[:5000]}")
             return manifest
     except Exception as e:
         print(f"Error getting model manifest: {e}")
@@ -156,11 +166,12 @@ def verify_gguf_file(file_path: Path) -> bool:
 def find_model_file(model_name: str, ollama_models_dir: Path) -> Optional[Path]:
     """Find the actual model file (GGUF) in Ollama's storage for the specific model"""
     # Ollama stores models as blobs with SHA256 hashes
-    # Strategy: Use manifest to find the correct blob, then fall back to finding largest file
+    # Strategy: Use manifest to get the correct hash, then find matching blob
+    # This ensures we get the exact model file, not just the largest file
     
     print(f"Searching for model file for '{model_name}' in {ollama_models_dir}...")
     
-    # Try to get model manifest to find the correct blob
+    # First, get the model manifest to extract the correct blob hash
     manifest = get_model_manifest(model_name)
     model_blob_hash = None
     
@@ -281,13 +292,43 @@ def find_model_file(model_name: str, ollama_models_dir: Path) -> Optional[Path]:
                 model_blob_hash = found_hash
                 print(f"Found hash via recursive search: {model_blob_hash[:16]}...")
     
-    # If we couldn't extract the hash from manifest, we can't reliably find the file
+    # If we couldn't extract the hash from manifest, fall back to finding largest valid GGUF
+    # This is a last resort - the manifest hash is preferred for accuracy
     if not model_blob_hash:
-        print(f"[ERROR] Could not extract blob hash from manifest for '{model_name}'.")
-        print(f"   This means we cannot identify the exact blob file needed.")
-        print(f"   Ollama stores models in a proprietary format and requires the manifest hash to locate them.")
-        print(f"\n[INFO] Make sure the model is available in Ollama storage.")
-        return None
+        print(f"[WARNING] Could not extract blob hash from manifest for '{model_name}'.")
+        print(f"   Falling back to finding largest valid GGUF file...")
+        print(f"   Note: This may select the wrong file if multiple models are stored.")
+        
+        # Get all blob files
+        blob_files = list(ollama_models_dir.glob("*"))
+        print(f"Found {len(blob_files)} files in Ollama storage")
+        
+        # Find the largest valid GGUF file (model weights are typically the largest)
+        # Minimum size: 50MB (to filter out small metadata files)
+        min_size = 50 * 1024 * 1024  # 50MB
+        valid_gguf_files = []
+        
+        for blob_file in blob_files:
+            if blob_file.is_file():
+                try:
+                    size = blob_file.stat().st_size
+                    if size >= min_size:
+                        # Verify it's a valid GGUF file
+                        if verify_gguf_file(blob_file):
+                            valid_gguf_files.append((blob_file, size))
+                except (OSError, PermissionError):
+                    continue
+        
+        if valid_gguf_files:
+            # Sort by size (largest first) and return the largest valid GGUF
+            valid_gguf_files.sort(key=lambda x: x[1], reverse=True)
+            largest_file, largest_size = valid_gguf_files[0]
+            print(f"[WARNING] Using largest valid GGUF file: {largest_file.name} ({largest_size / (1024**2):.1f} MB)")
+            print(f"   This may not be the correct model - verify the model works correctly.")
+            return largest_file
+        else:
+            print(f"[ERROR] No valid GGUF files found (searched for files > {min_size / (1024**2):.0f} MB)")
+            return None
     
     # Get all blob files
     blob_files = list(ollama_models_dir.glob("*"))
@@ -369,6 +410,20 @@ def copy_model_to_local(model_name: str, source_path: Path, dest_name: Optional[
         dest_name = model_name.replace(":", "-") + ".gguf"
     
     dest_path = MODELS_DIR / dest_name
+    
+    # Check if file already exists and create backup
+    if dest_path.exists():
+        import datetime
+        backup_name = f"{dest_path.stem}_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}{dest_path.suffix}"
+        backup_path = MODELS_DIR / backup_name
+        print(f"[WARNING] Model file already exists: {dest_path}")
+        print(f"  Creating backup: {backup_path}")
+        try:
+            shutil.copy2(dest_path, backup_path)
+            print(f"  Backup created successfully")
+        except Exception as e:
+            print(f"  [WARNING] Failed to create backup: {e}")
+            print(f"  Proceeding with overwrite...")
     
     print(f"Copying model from {source_path} to {dest_path}...")
     try:

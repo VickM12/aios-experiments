@@ -349,6 +349,19 @@ class TelemetryGUI:
                 )
                 # Ensure response is a string (not a dict or other type)
                 if response and isinstance(response, str) and response.strip():
+                    # Strip code block markers if present (some models wrap markdown in code blocks)
+                    cleaned_response = response.strip()
+                    # Remove markdown code block markers (```markdown ... ``` or ``` ... ```)
+                    if cleaned_response.startswith("```"):
+                        lines = cleaned_response.split("\n")
+                        # Remove first line if it's a code block opener
+                        if lines[0].startswith("```"):
+                            lines = lines[1:]
+                        # Remove last line if it's a code block closer
+                        if lines and lines[-1].strip() == "```":
+                            lines = lines[:-1]
+                        cleaned_response = "\n".join(lines).strip()
+                    response = cleaned_response
                     # Update history and return
                     history.append({"role": "user", "content": message})
                     history.append({"role": "assistant", "content": response})
@@ -620,19 +633,56 @@ class TelemetryGUI:
             result += "### <i class='fas fa-brain' style='margin-right: 6px;'></i> LLM Analysis\n\n"
             if self.llm_analyzer.is_available():
                 try:
-                    result += "*Generating LLM insights... This may take a moment.*\n\n"
-                    llm_insights = self.llm_analyzer.analyze_performance(
-                        self.telemetry_history,
-                        analysis,
-                        self.system_info
-                    )
-                    if llm_insights and str(llm_insights).strip() and str(llm_insights).strip() != 'Error: Empty response from model':
-                        # Only add if it's a valid response (not empty and not an error message)
-                        result += str(llm_insights).strip() + "\n\n"
+                    # Add timeout to prevent hanging (30 seconds max)
+                    import signal
+                    import threading
+                    
+                    llm_insights = None
+                    error_occurred = False
+                    
+                    def run_llm_analysis():
+                        nonlocal llm_insights, error_occurred
+                        try:
+                            llm_insights = self.llm_analyzer.analyze_performance(
+                                self.telemetry_history,
+                                analysis,
+                                self.system_info
+                            )
+                        except Exception as e:
+                            error_occurred = True
+                            llm_insights = f"Error: {str(e)}"
+                    
+                    # Run in a thread with timeout
+                    # Analysis takes longer than chat - use 120 seconds for analysis
+                    thread = threading.Thread(target=run_llm_analysis, daemon=True)
+                    thread.start()
+                    thread.join(timeout=120)  # 120 second timeout for analysis (longer than chat)
+                    
+                    if thread.is_alive():
+                        # Thread is still running - timeout occurred
+                        result += "<i class='fas fa-exclamation-triangle' style='color: #f59e0b; margin-right: 4px;'></i> *LLM analysis timed out (took longer than 30 seconds).*\n"
+                        result += "*The model may be too slow or overloaded. Try again or use a faster model.*\n"
+                        result += "*Showing standard analysis below.*\n\n"
+                    elif error_occurred or (llm_insights and 'Error' in str(llm_insights)):
+                        # Error occurred
+                        error_msg = str(llm_insights).strip() if llm_insights else 'Unknown error'
+                        result += f"<i class='fas fa-exclamation-triangle' style='color: #f59e0b; margin-right: 4px;'></i> *LLM analysis error: {error_msg}*\n"
+                        result += "*Showing standard analysis below.*\n\n"
+                    elif llm_insights and str(llm_insights).strip() and str(llm_insights).strip() != 'Error: Empty response from model':
+                        # Success - strip code blocks if present
+                        cleaned_insights = str(llm_insights).strip()
+                        # Remove markdown code block markers if present
+                        if cleaned_insights.startswith("```"):
+                            lines = cleaned_insights.split("\n")
+                            if lines[0].startswith("```"):
+                                lines = lines[1:]
+                            if lines and lines[-1].strip() == "```":
+                                lines = lines[:-1]
+                            cleaned_insights = "\n".join(lines).strip()
+                        result += cleaned_insights + "\n\n"
                     else:
-                        # Show helpful error message instead of empty boxes
-                        error_msg = str(llm_insights).strip() if llm_insights and 'Error' in str(llm_insights) else 'Empty response'
-                        result += f"<i class='fas fa-exclamation-triangle' style='color: #f59e0b; margin-right: 4px;'></i> *LLM analysis unavailable: {error_msg}*\n"
+                        # Empty response
+                        result += "<i class='fas fa-exclamation-triangle' style='color: #f59e0b; margin-right: 4px;'></i> *LLM analysis unavailable: Empty response from model.*\n"
                         result += "*Showing standard analysis below.*\n\n"
                 except Exception as e:
                     result += f"<i class='fas fa-exclamation-triangle' style='color: #f59e0b; margin-right: 4px;'></i> *LLM analysis error: {str(e)}*\n"
