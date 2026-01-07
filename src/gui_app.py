@@ -34,6 +34,21 @@ class TelemetryGUI:
         # Load LLM config from preferences or use provided/env vars
         provider = llm_provider or self.config.get_llm_provider() or os.getenv("LLM_PROVIDER", "ollama")
         model = llm_model or self.config.get_llm_model() or os.getenv("LLM_MODEL", None)
+        
+        # Auto-detect local model - prefer local models if they exist
+        # This overrides config if a local model is found (better performance)
+        models_dir = Path(__file__).parent.parent / "models"
+        if models_dir.exists():
+            gguf_files = list(models_dir.glob("*.gguf"))
+            if gguf_files:
+                # Found local model, prefer llamacpp (unless explicitly set to something else)
+                if not llm_provider and not os.getenv("LLM_PROVIDER"):
+                    provider = "llamacpp"
+                    if not model:
+                        # Use the first .gguf file found
+                        model = gguf_files[0].name
+                        print(f"Auto-detected local model: {model}, using llamacpp provider")
+        
         self.llm_analyzer = LLMAnalyzer(provider=provider, model=model)
         self.telemetry_history = []
         self.is_monitoring = False
@@ -314,28 +329,36 @@ class TelemetryGUI:
         # Use LLM for all questions if available - it's smart enough to understand any question
         response = ""
         
-        # Try LLM first if available and we have data
-        if self.llm_analyzer.is_available() and len(self.telemetry_history) > 0:
+        # Try LLM first if available (allow chat even without telemetry data)
+        if self.llm_analyzer.is_available():
             try:
-                # Get analysis for context
+                # Get analysis for context (only if we have enough data)
                 analysis = None
+                telemetry_data = self.telemetry_history if self.telemetry_history else []
                 if len(self.telemetry_history) >= 10:
                     analysis = self.analyzer.comprehensive_analysis(self.telemetry_history)
                 
                 # Use LLM to answer the question with full context, including conversation history
+                # Pass empty list if no telemetry data - LLM can still answer general questions
                 response = self.llm_analyzer.answer_question(
                     message,
-                    self.telemetry_history,
+                    telemetry_data,
                     analysis,
                     self.system_info,
                     conversation_history=history  # Pass conversation history for context
                 )
-                # If we got a valid response, use it
-                if response and str(response).strip():
+                # Ensure response is a string (not a dict or other type)
+                if response and isinstance(response, str) and response.strip():
                     # Update history and return
                     history.append({"role": "user", "content": message})
                     history.append({"role": "assistant", "content": response})
                     return "", history
+                elif response and not isinstance(response, str):
+                    # Response is not a string (might be a dict), log and use error message
+                    print(f"ERROR: answer_question returned non-string: {type(response)}")
+                    if isinstance(response, dict):
+                        print(f"Response dict keys: {list(response.keys())}")
+                    response = "Error: Invalid response format from LLM."
             except Exception as e:
                 # LLM failed, fall through to basic responses
                 response = f"Error getting LLM response: {str(e)}\n\n"
@@ -603,10 +626,14 @@ class TelemetryGUI:
                         analysis,
                         self.system_info
                     )
-                    if llm_insights and str(llm_insights).strip():
+                    if llm_insights and str(llm_insights).strip() and str(llm_insights).strip() != 'Error: Empty response from model':
+                        # Only add if it's a valid response (not empty and not an error message)
                         result += str(llm_insights).strip() + "\n\n"
                     else:
-                        result += "<i class='fas fa-exclamation-triangle' style='color: #f59e0b; margin-right: 4px;'></i> *LLM returned empty response. Showing standard analysis below.*\n\n"
+                        # Show helpful error message instead of empty boxes
+                        error_msg = str(llm_insights).strip() if llm_insights and 'Error' in str(llm_insights) else 'Empty response'
+                        result += f"<i class='fas fa-exclamation-triangle' style='color: #f59e0b; margin-right: 4px;'></i> *LLM analysis unavailable: {error_msg}*\n"
+                        result += "*Showing standard analysis below.*\n\n"
                 except Exception as e:
                     result += f"<i class='fas fa-exclamation-triangle' style='color: #f59e0b; margin-right: 4px;'></i> *LLM analysis error: {str(e)}*\n"
                     result += "*Showing standard analysis below.*\n\n"

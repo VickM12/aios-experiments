@@ -402,7 +402,8 @@ class LLMAnalyzer:
     def is_available(self) -> bool:
         """Check if LLM is available"""
         if self.provider == "llamacpp":
-            return self.llama_cpp_model is not None and self.client == "llamacpp"
+            # For llamacpp, just check if model is loaded (client might not be set yet)
+            return self.llama_cpp_model is not None
         elif self.provider == "ollama":
             # Check if Ollama server is running
             if self.client == "ollama":
@@ -474,8 +475,13 @@ Keep the response concise and actionable."""
                         stop=["\n\n\n", "Human:", "User:"],
                         echo=False
                     )
+                # Handle llama-cpp-python response format (same as Linux - keep it simple)
                 result = response.get('choices', [{}])[0].get('text', '')
-                return result.strip() if result else 'Error: Empty response from model'
+                result = result.strip() if result else ''
+                
+                if not result:
+                    return 'Error: Empty response from model. The model may need more context or the prompt may be too long.'
+                return result
             elif self.provider == "ollama":
                 # Try using ollama library first
                 try:
@@ -575,8 +581,13 @@ Provide: 1) System health assessment 2) Concerning patterns 3) Optimization reco
                         stop=["\n\n\n", "Human:", "User:"],
                         echo=False
                     )
+                # Handle llama-cpp-python response format (same as Linux - keep it simple)
                 result = response.get('choices', [{}])[0].get('text', '')
-                return result.strip() if result else 'Error: Empty response from model'
+                result = result.strip() if result else ''
+                
+                if not result:
+                    return 'Error: Empty response from model. The model may need more context or the prompt may be too long.'
+                return result
             elif self.provider == "ollama":
                 # Try using ollama library first
                 try:
@@ -918,7 +929,21 @@ Provide: 1) System health assessment 2) Concerning patterns 3) Optimization reco
         context = self._build_comprehensive_context(telemetry_data, analysis, system_info)
         
         # Create a more concise prompt to avoid token limits
-        context_str = json.dumps(context, indent=1, default=str)
+        # Limit context size for small models - only include essential info
+        if len(telemetry_data) == 0:
+            # No telemetry data - just use system info for general questions
+            if system_info:
+                context_str = f"System: {system_info.get('os', 'Unknown')} {system_info.get('os_release', '')}, CPU: {system_info.get('cpu_model', 'Unknown')}, RAM: {system_info.get('memory_gb', 0):.1f} GB"
+                if system_info.get('gpu'):
+                    context_str += f", GPU: {system_info['gpu'][0] if system_info['gpu'] else 'None'}"
+            else:
+                context_str = "No system information available."
+        else:
+            # Limit context to latest snapshot and summary stats only
+            context_str = json.dumps(context, indent=1, default=str)
+            # Truncate if too long (keep first 2000 chars for small models)
+            if len(context_str) > 2000:
+                context_str = context_str[:2000] + "... (truncated)"
         
         # Include conversation history if provided
         history_context = ""
@@ -935,7 +960,18 @@ Provide: 1) System health assessment 2) Concerning patterns 3) Optimization reco
                 # Include last 6 messages (3 exchanges) for context to avoid token limits
                 history_context = "\n\nPrevious conversation:\n" + "\n".join(history_messages[-6:])
         
-        prompt = f"""You are a system performance analyst. Answer the user's question using the telemetry data below.{history_context}
+        # Simplify prompt for general questions without telemetry data
+        if len(telemetry_data) == 0:
+            prompt = f"""You are a helpful system monitoring assistant. Answer the user's question about their device.{history_context}
+
+Question: {question}
+
+System Information:
+{context_str}
+
+Provide a clear, helpful answer. If you don't have specific data, provide general information about the topic."""
+        else:
+            prompt = f"""You are a system performance analyst. Answer the user's question using the telemetry data below.{history_context}
 
 Question: {question}
 
@@ -956,8 +992,13 @@ Provide a clear, accurate answer based on the data. Reference specific values wh
                         stop=["\n\n\n", "Human:", "User:"],
                         echo=False
                     )
+                # Handle llama-cpp-python response format (same as Linux - keep it simple)
                 result = response.get('choices', [{}])[0].get('text', '')
-                return result.strip() if result else 'Error: Empty response from model'
+                result = result.strip() if result else ''
+                
+                if not result:
+                    return 'Error: Empty response from model. The model may need more context or the prompt may be too long.'
+                return result
             elif self.provider == "ollama":
                 response = requests.post(
                     f"{self.ollama_base_url}/api/generate",
