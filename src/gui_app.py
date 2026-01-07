@@ -148,6 +148,22 @@ class TelemetryGUI:
             mem_info = info['memory']
             html += f"<p><strong>Memory:</strong> {mem_info.get('total_gb', 0):.1f} GB</p>"
         
+        if 'system' in info:
+            sys_info = info['system']
+            uptime_seconds = sys_info.get('uptime_seconds', 0)
+            if uptime_seconds > 0:
+                # Format uptime as days, hours, minutes
+                days = int(uptime_seconds // 86400)
+                hours = int((uptime_seconds % 86400) // 3600)
+                minutes = int((uptime_seconds % 3600) // 60)
+                if days > 0:
+                    uptime_str = f"{days}d {hours}h {minutes}m"
+                elif hours > 0:
+                    uptime_str = f"{hours}h {minutes}m"
+                else:
+                    uptime_str = f"{minutes}m"
+                html += f"<p><strong>Uptime:</strong> {uptime_str}</p>"
+        
         html += "</div>"
         return html
     
