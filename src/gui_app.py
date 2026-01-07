@@ -625,12 +625,12 @@ class TelemetryGUI:
                 # Silently fail archiving if there's an error
                 pass
         
-        # Format analysis results
-        result = "## AI Analysis Results\n\n"
+        # Format analysis results as HTML (since we're using gr.HTML())
+        result = "<h2>AI Analysis Results</h2>\n\n"
         
         # Add LLM insights if requested and available
         if use_llm:
-            result += "### <i class='fas fa-brain' style='margin-right: 6px;'></i> LLM Analysis\n\n"
+            result += "<h3><i class='fas fa-brain' style='margin-right: 6px;'></i> LLM Analysis</h3>\n\n"
             if self.llm_analyzer.is_available():
                 try:
                     # Add timeout to prevent hanging (30 seconds max)
@@ -696,7 +696,7 @@ class TelemetryGUI:
         # Performance Insights
         insights = analysis.get('performance_insights', {})
         if 'current_status' in insights:
-            result += "### <i class='fas fa-chart-line' style='margin-right: 6px;'></i> Performance Status\n"
+            result += "<h3><i class='fas fa-chart-line' style='margin-right: 6px;'></i> Performance Status</h3>\n"
             for metric, data in insights['current_status'].items():
                 status_icon = "<i class='fas fa-circle' style='color: #ef4444; margin-right: 4px;'></i>" if data.get('status') == 'high' else "<i class='fas fa-circle' style='color: #f59e0b; margin-right: 4px;'></i>" if data.get('status') == 'moderate' else "<i class='fas fa-circle' style='color: #10b981; margin-right: 4px;'></i>"
                 
@@ -706,12 +706,12 @@ class TelemetryGUI:
                     if isinstance(value, (int, float)):
                         result += f"{status_icon} **{metric.upper()}**: {value:.2f}°C ({data.get('status', 'unknown')})\n"
                     else:
-                        result += f"{status_icon} **{metric.upper()}**: {value} ({data.get('status', 'unknown')})\n"
+                        result += f"{status_icon} <strong>{metric.upper()}</strong>: {value} ({data.get('status', 'unknown')})<br>\n"
                 elif metric == 'network':
                     sent_mb = data.get('bytes_sent_mb', 0)
                     recv_mb = data.get('bytes_recv_mb', 0)
                     connections = data.get('connections', 0)
-                    result += f"{status_icon} **{metric.upper()}**: {sent_mb:.1f} MB sent, {recv_mb:.1f} MB recv ({connections} connections)\n"
+                    result += f"{status_icon} <strong>{metric.upper()}</strong>: {sent_mb:.1f} MB sent, {recv_mb:.1f} MB recv ({connections} connections)<br>\n"
                 elif metric == 'power':
                     power_str = []
                     if 'gpu_watts' in data:
@@ -719,19 +719,19 @@ class TelemetryGUI:
                     if 'cpu_energy_joules' in data:
                         power_str.append(f"CPU: {data['cpu_energy_joules']:.1f}J")
                     if power_str:
-                        result += f"{status_icon} **{metric.upper()}**: {', '.join(power_str)}\n"
+                        result += f"{status_icon} <strong>{metric.upper()}</strong>: {', '.join(power_str)}<br>\n"
                     else:
-                        result += f"{status_icon} **{metric.upper()}**: Not available\n"
+                        result += f"{status_icon} <strong>{metric.upper()}</strong>: Not available<br>\n"
                 elif metric == 'battery':
                     percent = data.get('percent', 'N/A')
                     status = data.get('status', 'unknown')
                     plugged = data.get('power_plugged', False)
-                    result += f"{status_icon} **{metric.upper()}**: {percent}% ({status}, {'Plugged in' if plugged else 'Unplugged'})\n"
+                    result += f"{status_icon} <strong>{metric.upper()}</strong>: {percent}% ({status}, {'Plugged in' if plugged else 'Unplugged'})<br>\n"
                 elif metric == 'processes':
                     total = data.get('total', 0)
                     high_cpu = data.get('high_cpu_count', 0)
                     high_mem = data.get('high_memory_count', 0)
-                    result += f"{status_icon} **{metric.upper()}**: {total} total"
+                    result += f"{status_icon} <strong>{metric.upper()}</strong>: {total} total"
                     if high_cpu > 0 or high_mem > 0:
                         result += f" ({high_cpu} high CPU, {high_mem} high memory)"
                     result += "\n"
@@ -744,19 +744,19 @@ class TelemetryGUI:
                             proc_cpu = proc.get('cpu_percent', 0) or 0
                             proc_mem = proc.get('memory_percent', 0) or 0
                             if proc_cpu > 0 or proc_mem > 0.1:
-                                result += f"    • {proc_name}: CPU {proc_cpu:.1f}%, Mem {proc_mem:.2f}%\n"
+                                result += f"    • {proc_name}: CPU {proc_cpu:.1f}%, Mem {proc_mem:.2f}%<br>\n"
                 else:
                     # Default: CPU, Memory, Disk (percentages)
                     value = data.get('usage', data.get('average', 'N/A'))
                     if isinstance(value, (int, float)):
-                        result += f"{status_icon} **{metric.upper()}**: {value:.2f}% ({data.get('status', 'unknown')})\n"
+                        result += f"{status_icon} <strong>{metric.upper()}</strong>: {value:.2f}% ({data.get('status', 'unknown')})<br>\n"
                     else:
-                        result += f"{status_icon} **{metric.upper()}**: {value} ({data.get('status', 'unknown')})\n"
+                        result += f"{status_icon} <strong>{metric.upper()}</strong>: {value} ({data.get('status', 'unknown')})<br>\n"
         
         # Anomaly Detection
         anomaly = analysis.get('anomaly_detection', {})
         if anomaly.get('anomalies_detected', 0) > 0:
-            result += f"\n### <i class='fas fa-search' style='margin-right: 6px;'></i> Anomalies Detected\n"
+            result += f"\n<h3><i class='fas fa-search' style='margin-right: 6px;'></i> Anomalies Detected</h3>\n"
             result += f"- Found {anomaly['anomalies_detected']} anomalies ({anomaly.get('anomaly_percentage', 0):.1f}%)\n"
         
         # Predictions
@@ -805,7 +805,7 @@ class TelemetryGUI:
         
         # Recommendations
         if insights.get('recommendations'):
-            result += f"\n### <i class='fas fa-lightbulb' style='margin-right: 6px;'></i> Recommendations\n"
+            result += f"\n<h3><i class='fas fa-lightbulb' style='margin-right: 6px;'></i> Recommendations</h3>\n"
             for rec in insights['recommendations']:
                 result += f"- {rec}\n"
         
@@ -1676,7 +1676,7 @@ class TelemetryGUI:
                                 outputs=prediction_steps
                             )
                             
-                            analysis_output = gr.Markdown()
+                            analysis_output = gr.HTML()  # Use HTML instead of Markdown to properly render HTML tags
                             
                             # Show current LLM status (read-only, full config in Settings)
                             # Note: llm_status_display is defined at the top level and updated from Settings tab

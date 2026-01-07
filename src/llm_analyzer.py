@@ -591,12 +591,18 @@ Keep the response concise and actionable."""
         if len(context_str) > 3000:
             context_str = context_str[:3000] + "... (truncated for performance)"
         
-        prompt = f"""You are a system monitoring expert analyzing telemetry data. Analyze system performance based on the telemetry data below:
+        prompt = f"""Analyze the system telemetry data below and provide a brief analysis.
 
-Data:
+Telemetry Data:
 {context_str}
 
-Provide: 1) System health assessment 2) Concerning patterns 3) Optimization recommendations 4) Resource utilization analysis. Keep response concise."""
+Format your response as four numbered points:
+1. System health assessment
+2. Concerning patterns  
+3. Optimization recommendations
+4. Resource utilization summary
+
+Write each point as a single sentence. Do not repeat instructions or include code blocks."""
 
         try:
             if self.provider == "llamacpp" and self.llama_cpp_model:
@@ -606,14 +612,51 @@ Provide: 1) System health assessment 2) Concerning patterns 3) Optimization reco
                 with self._llm_lock:  # Prevent concurrent access to model
                     response = self.llama_cpp_model(
                         full_prompt,
-                        max_tokens=1000,
-                        temperature=0.7,
-                        stop=["\n\n\n", "Human:", "User:"],
+                        max_tokens=500,  # Reduced for analysis to prevent repetition
+                        temperature=0.5,  # Lower temperature for more focused, less repetitive responses
+                        stop=["\n\n\n", "Human:", "User:", "Question:", "Data:", "Analysis:", "Recommendations:", "###", "##", "```", "Keep your response", "Keep response"],  # Better stop sequences including code blocks
                         echo=False
                     )
                 # Handle llama-cpp-python response format (same as Linux - keep it simple)
                 result = response.get('choices', [{}])[0].get('text', '')
                 result = result.strip() if result else ''
+                
+                # Post-process to clean up the response
+                if result:
+                    # Remove code block markers first
+                    result = result.replace('```python', '').replace('```', '').strip()
+                    
+                    # Remove prompt instructions that might have leaked into the response
+                    prompt_artifacts = [
+                        "Keep your response brief",
+                        "Keep response brief",
+                        "avoid repetition",
+                        "Stop after providing",
+                        "Do not repeat instructions",
+                        "Do not include code blocks",
+                        "Format your response",
+                        "Write each point"
+                    ]
+                    for artifact in prompt_artifacts:
+                        # Remove the artifact and any surrounding punctuation
+                        result = result.replace(artifact, '').replace('  ', ' ').strip()
+                    
+                    # Remove duplicate consecutive sentences
+                    sentences = result.split('. ')
+                    unique_sentences = []
+                    prev_sentence = None
+                    for sentence in sentences:
+                        sentence = sentence.strip()
+                        # Skip empty sentences and very short ones (likely artifacts)
+                        if sentence and len(sentence) > 10 and sentence != prev_sentence:
+                            unique_sentences.append(sentence)
+                            prev_sentence = sentence
+                    result = '. '.join(unique_sentences)
+                    if result and not result.endswith('.'):
+                        result += '.'
+                    
+                    # Remove any remaining "---" separators that might be artifacts
+                    result = result.replace('---', '').strip()
                 
                 if not result:
                     return 'Error: Empty response from model. The model may need more context or the prompt may be too long.'
