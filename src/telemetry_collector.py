@@ -84,21 +84,127 @@ class TelemetryCollector:
     def get_temperature_sensors(self) -> Dict[str, Any]:
         """Collect temperature sensor data"""
         temps = {}
+        
+        # Try Linux/Mac method first (psutil)
         try:
             if hasattr(psutil, "sensors_temperatures"):
                 sensor_data = psutil.sensors_temperatures()
-                for name, entries in sensor_data.items():
-                    temps[name] = [
-                        {
-                            'label': entry.label,
-                            'current': entry.current,
-                            'high': entry.high,
-                            'critical': entry.critical,
-                        }
-                        for entry in entries
-                    ]
+                if sensor_data:
+                    for name, entries in sensor_data.items():
+                        temps[name] = [
+                            {
+                                'label': entry.label,
+                                'current': entry.current,
+                                'high': entry.high,
+                                'critical': entry.critical,
+                            }
+                            for entry in entries
+                        ]
         except Exception as e:
-            temps['error'] = str(e)
+            temps['psutil_error'] = str(e)
+        
+        # Windows-specific temperature collection via WMI
+        if self.is_windows and not temps:
+            temps = self._get_windows_temperatures()
+        
+        return temps
+    
+    def _get_windows_temperatures(self) -> Dict[str, Any]:
+        """Get temperature sensors on Windows using WMI"""
+        temps = {}
+        
+        # Try using wmi module
+        try:
+            import wmi
+            w = wmi.WMI(namespace="root\\wmi")
+            
+            # Try MSAcpi_ThermalZoneTemperature (most common)
+            try:
+                temperature_info = w.MSAcpi_ThermalZoneTemperature()
+                if temperature_info:
+                    temps['ThermalZone'] = []
+                    for idx, sensor in enumerate(temperature_info):
+                        # WMI returns temperature in tenths of Kelvin
+                        temp_kelvin = sensor.CurrentTemperature / 10.0
+                        temp_celsius = temp_kelvin - 273.15
+                        temps['ThermalZone'].append({
+                            'label': f'Zone {idx}',
+                            'current': round(temp_celsius, 1),
+                            'high': None,
+                            'critical': None,
+                        })
+            except Exception:
+                pass
+            
+            # Try Win32_TemperatureProbe (less common but worth trying)
+            try:
+                w2 = wmi.WMI()
+                temp_probes = w2.Win32_TemperatureProbe()
+                if temp_probes:
+                    temps['TemperatureProbe'] = []
+                    for probe in temp_probes:
+                        if probe.CurrentReading:
+                            temps['TemperatureProbe'].append({
+                                'label': probe.Name or 'Probe',
+                                'current': probe.CurrentReading / 10.0,  # Usually in tenths of degrees
+                                'high': None,
+                                'critical': None,
+                            })
+            except Exception:
+                pass
+                
+        except ImportError:
+            temps['info'] = "WMI module not installed. Run: pip install wmi"
+        except Exception as e:
+            temps['wmi_error'] = str(e)
+        
+        # Try OpenHardwareMonitor WMI interface (if OHM is running)
+        if not temps or 'info' in temps:
+            try:
+                import wmi
+                w = wmi.WMI(namespace="root\\OpenHardwareMonitor")
+                sensors = w.Sensor()
+                
+                for sensor in sensors:
+                    if sensor.SensorType == 'Temperature':
+                        parent = sensor.Parent or 'Unknown'
+                        if parent not in temps:
+                            temps[parent] = []
+                        temps[parent].append({
+                            'label': sensor.Name,
+                            'current': round(sensor.Value, 1),
+                            'high': None,
+                            'critical': None,
+                        })
+            except Exception:
+                # OHM not running or not installed - that's okay
+                pass
+        
+        # Try LibreHardwareMonitor WMI interface
+        if not temps or 'info' in temps:
+            try:
+                import wmi
+                w = wmi.WMI(namespace="root\\LibreHardwareMonitor")
+                sensors = w.Sensor()
+                
+                for sensor in sensors:
+                    if sensor.SensorType == 'Temperature':
+                        parent = sensor.Parent or 'Unknown'
+                        if parent not in temps:
+                            temps[parent] = []
+                        temps[parent].append({
+                            'label': sensor.Name,
+                            'current': round(sensor.Value, 1),
+                            'high': None,
+                            'critical': None,
+                        })
+            except Exception:
+                # LHM not running or not installed - that's okay
+                pass
+        
+        if not temps:
+            temps['info'] = "No temperature sensors accessible. Try running OpenHardwareMonitor or LibreHardwareMonitor."
+        
         return temps
     
     def get_fan_sensors(self) -> Dict[str, Any]:

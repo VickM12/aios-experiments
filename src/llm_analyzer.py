@@ -72,7 +72,7 @@ class LLMAnalyzer:
                         self.client = "ollama"
                         # Try common model names that might work
                         common_models = ['llama3.2', 'llama2', 'alpaca', 'llama3.2:latest', 'llama2:latest', 'alpaca:latest']
-                        self.model = self.model or 'llama3.2'  # Use default
+                        self.model = self.model or common_models[0]  # Use default
                     else:
                         self.client = "ollama"
                         self._select_model(model_names)
@@ -167,15 +167,28 @@ class LLMAnalyzer:
                 
                 # Model file exists, try to load it
                 print(f"Loading llama-cpp model from {model_path}")
+                
+                # Check for GPU support and configure accordingly
+                n_gpu_layers = int(os.getenv("LLAMA_GPU_LAYERS", "-1"))  # -1 = all layers on GPU
+                use_gpu = n_gpu_layers != 0
+                
+                # Detect CPU cores for optimal threading
+                import multiprocessing
+                cpu_count = multiprocessing.cpu_count()
+                n_threads = max(4, cpu_count - 2)  # Leave 2 cores for system
+                
                 try:
                     self.llama_cpp_model = Llama(
                         model_path=str(model_path),
-                        n_ctx=32768,  # Context window - match model's training context to avoid warnings
-                        n_threads=4,  # Number of threads
+                        n_ctx=8192,  # Increased for more system data context
+                        n_threads=n_threads,  # Auto-detect optimal threads
+                        n_batch=512,  # Batch size for prompt processing
+                        n_gpu_layers=n_gpu_layers,  # GPU layer offloading (-1 = all, 0 = none)
                         verbose=False
                     )
                     self.client = "llamacpp"
-                    print(f"[OK] Successfully loaded model: {model_path.name}")
+                    gpu_status = f"GPU layers: {n_gpu_layers}" if use_gpu else "CPU only"
+                    print(f"[OK] Successfully loaded model: {model_path.name} ({gpu_status})")
                 except Exception as load_error:
                     print(f"Error loading model file: {load_error}")
                     print(f"  File exists: {model_path.exists()}")
@@ -244,185 +257,6 @@ class LLMAnalyzer:
             if not model_found and model_names:
                 self.model = model_names[0]
     
-    def _setup_client(self):
-        """Setup the LLM client"""
-        if self.provider == "ollama":
-            # Try using the ollama Python library first
-            try:
-                import ollama
-                # Try to list models using the library
-                try:
-                    models_list = ollama.list()
-                    model_names = [m.get('name', '') for m in models_list.get('models', [])]
-                except:
-                    # Fall back to API call
-                    response = requests.get(f"{self.ollama_base_url}/api/tags", timeout=2)
-                    if response.status_code == 200:
-                        models = response.json().get('models', [])
-                        model_names = [m.get('name', '') for m in models]
-                    else:
-                        model_names = []
-                
-                if not model_names:
-                    # No models available via library, try direct API
-                    try:
-                        response = requests.get(f"{self.ollama_base_url}/api/tags", timeout=2)
-                        if response.status_code == 200:
-                            models = response.json().get('models', [])
-                            model_names = [m.get('name', '') for m in models]
-                    except:
-                        model_names = []
-                    
-                    if not model_names:
-                        # Still no models - but set client to "ollama" anyway
-                        # User might need to pull models, but we'll allow them to try
-                        self.client = "ollama"
-                        # Try common model names that might work
-                        common_models = ['llama3.2', 'llama2', 'alpaca', 'llama3.2:latest', 'llama2:latest', 'alpaca:latest']
-                        self.model = self.model or 'llama3.2'  # Use default
-                    else:
-                        self.client = "ollama"
-                        self._select_model(model_names)
-                else:
-                    self.client = "ollama"
-                    self._select_model(model_names)
-            except ImportError:
-                # ollama library not installed, use API only
-                try:
-                    response = requests.get(f"{self.ollama_base_url}/api/tags", timeout=2)
-                    if response.status_code == 200:
-                        models = response.json().get('models', [])
-                        model_names = [m.get('name', '') for m in models]
-                        if model_names:
-                            self.client = "ollama"
-                            self._select_model(model_names)
-                        else:
-                            self.client = None
-                    else:
-                        self.client = None
-                except Exception:
-                    self.client = None
-            except Exception as e:
-                # Any other error, try API as fallback
-                try:
-                    response = requests.get(f"{self.ollama_base_url}/api/tags", timeout=2)
-                    if response.status_code == 200:
-                        models = response.json().get('models', [])
-                        model_names = [m.get('name', '') for m in models]
-                        if model_names:
-                            self.client = "ollama"
-                            self._select_model(model_names)
-                        else:
-                            self.client = None
-                    else:
-                        self.client = None
-                except:
-                    self.client = None
-        elif self.provider == "llamacpp":
-            # Setup llama-cpp-python
-            try:
-                from llama_cpp import Llama
-                
-                # Determine model path
-                # __file__ is src/llm_analyzer.py, so parent.parent is project root
-                project_root = Path(__file__).parent.parent
-                
-                if self.model_path:
-                    model_path = Path(self.model_path)
-                    if not model_path.is_absolute():
-                        # If relative path, make it relative to project root
-                        model_path = project_root / model_path
-                else:
-                    # Look in models directory
-                    models_dir = project_root / "models"
-                    # Convert model name: replace colons with hyphens (gemma3:1b -> gemma3-1b)
-                    # This matches the naming convention used by the download script
-                    model_name = self.model.replace(":", "-")
-                    model_path = models_dir / model_name
-                
-                # Resolve to absolute path for better error messages
-                model_path = model_path.resolve()
-                
-                if not model_path.exists():
-                    # Try without .gguf extension if model doesn't have one
-                    if not model_path.suffix or model_path.suffix != '.gguf':
-                        model_path_with_ext = model_path.with_suffix('.gguf')
-                        if model_path_with_ext.exists():
-                            model_path = model_path_with_ext
-                        else:
-                            # Try adding .gguf if no extension
-                            if not model_path.suffix:
-                                model_path = model_path.with_suffix('.gguf')
-                    
-                    # If still not found, try the original model name (in case user has file with colon)
-                    if not model_path.exists() and ":" in self.model:
-                        original_model_path = models_dir / self.model
-                        if not original_model_path.suffix or original_model_path.suffix != '.gguf':
-                            original_model_path = original_model_path.with_suffix('.gguf')
-                        if original_model_path.exists():
-                            model_path = original_model_path.resolve()
-                    
-                    if not model_path.exists():
-                        print(f"Warning: Model file not found at {model_path}")
-                        print(f"  Searched in: {project_root / 'models'}")
-                        print(f"  Model name: {self.model}")
-                        print(f"  Tried: {model_name}.gguf (converted from {self.model})")
-                        print(f"  Please download the model first using: python scripts/download_model.py")
-                        self.client = None
-                        self.llama_cpp_model = None
-                        return
-                
-                # Model file exists, try to load it
-                print(f"Loading llama-cpp model from {model_path}")
-                try:
-                    self.llama_cpp_model = Llama(
-                        model_path=str(model_path),
-                        n_ctx=32768,  # Context window - match model's training context to avoid warnings
-                        n_threads=4,  # Number of threads
-                        verbose=False
-                    )
-                    self.client = "llamacpp"
-                    print(f"[OK] Successfully loaded model: {model_path.name}")
-                except Exception as load_error:
-                    print(f"Error loading model file: {load_error}")
-                    print(f"  File exists: {model_path.exists()}")
-                    print(f"  File size: {model_path.stat().st_size / (1024**2):.1f} MB" if model_path.exists() else "N/A")
-                    import traceback
-                    traceback.print_exc()
-                    self.client = None
-                    self.llama_cpp_model = None
-            except ImportError as import_err:
-                print("Warning: llama-cpp-python not installed. Install with: pip install llama-cpp-python")
-                print(f"  Import error: {import_err}")
-                self.client = None
-                self.llama_cpp_model = None
-            except Exception as e:
-                print(f"Error setting up llama-cpp model: {e}")
-                import traceback
-                traceback.print_exc()
-                self.client = None
-                self.llama_cpp_model = None
-        elif self.provider == "openai":
-            try:
-                import openai
-                self.api_key = os.getenv("OPENAI_API_KEY")
-                if self.api_key:
-                    self.client = openai.OpenAI(api_key=self.api_key)
-                else:
-                    self.client = None
-            except ImportError:
-                self.client = None
-        elif self.provider == "anthropic":
-            try:
-                from anthropic import Anthropic
-                self.api_key = os.getenv("ANTHROPIC_API_KEY")
-                if self.api_key:
-                    self.client = Anthropic(api_key=self.api_key)
-                else:
-                    self.client = None
-            except ImportError:
-                self.client = None
-    
     def is_available(self) -> bool:
         """Check if LLM is available"""
         if self.provider == "llamacpp":
@@ -472,7 +306,10 @@ class LLMAnalyzer:
         # Build comprehensive context
         context = self._build_comprehensive_context(telemetry_data, analysis, system_info)
         
+        # Limit context size while allowing more system data
         context_str = json.dumps(context, indent=1, default=str)
+        if len(context_str) > 2500:
+            context_str = context_str[:2500] + "... (truncated)"
         
         prompt = f"""You are a system monitoring expert analyzing telemetry data. The system has detected {anomaly_data.get('anomalies_detected', 0)} anomalies out of {len(telemetry_data)} data points.
 
@@ -495,9 +332,9 @@ Keep the response concise and actionable."""
                 with self._llm_lock:  # Prevent concurrent access to model
                     response = self.llama_cpp_model(
                         full_prompt,
-                        max_tokens=1000,
-                        temperature=0.7,
-                        stop=["\n\n\n", "Human:", "User:"],
+                        max_tokens=400,  # More tokens for complete responses
+                        temperature=0.5,
+                        stop=["\n\n\n", "Human:", "User:", "\n\nData:", "\n\nSystem:", "---"],
                         echo=False
                     )
                 # Handle llama-cpp-python response format (same as Linux - keep it simple)
@@ -585,11 +422,10 @@ Keep the response concise and actionable."""
         # Build comprehensive context
         context = self._build_comprehensive_context(telemetry_data, analysis, system_info)
         
-        # Limit context size for analysis to avoid overwhelming the model
-        # Truncate if too long (keep first 3000 chars for analysis)
+        # Limit context size while allowing more system data
         context_str = json.dumps(context, indent=1, default=str)
-        if len(context_str) > 3000:
-            context_str = context_str[:3000] + "... (truncated for performance)"
+        if len(context_str) > 2500:
+            context_str = context_str[:2500] + "... (truncated)"
         
         prompt = f"""Analyze the system telemetry data below and provide a brief analysis.
 
@@ -612,9 +448,9 @@ Write each point as a single sentence. Do not repeat instructions or include cod
                 with self._llm_lock:  # Prevent concurrent access to model
                     response = self.llama_cpp_model(
                         full_prompt,
-                        max_tokens=500,  # Reduced for analysis to prevent repetition
-                        temperature=0.5,  # Lower temperature for more focused, less repetitive responses
-                        stop=["\n\n\n", "Human:", "User:", "Question:", "Data:", "Analysis:", "Recommendations:", "###", "##", "```", "Keep your response", "Keep response"],  # Better stop sequences including code blocks
+                        max_tokens=500,  # More tokens for complete analysis
+                        temperature=0.4,  # Lower temperature for more focused, less repetitive responses
+                        stop=["\n\n\n", "Human:", "User:", "Question:", "Data:", "Analysis:", "Recommendations:", "###", "##", "```", "Keep your response", "Keep response", "\n\nSystem:", "---"],  # Better stop sequences
                         echo=False
                     )
                 # Handle llama-cpp-python response format (same as Linux - keep it simple)
@@ -764,14 +600,33 @@ Write each point as a single sentence. Do not repeat instructions or include cod
             
             # Temperature summary
             temp_data = latest.get('temperature', {})
-            if temp_data and 'error' not in temp_data:
+            if temp_data:
                 all_temps = []
+                temp_details = []
+                has_error = 'error' in temp_data or 'wmi_error' in temp_data or 'psutil_error' in temp_data
+                info_msg = temp_data.get('info', '')
+                
                 for sensor_name, entries in temp_data.items():
-                    for entry in entries:
-                        if 'current' in entry and entry['current']:
-                            all_temps.append(entry['current'])
+                    if sensor_name in ('error', 'wmi_error', 'psutil_error', 'info'):
+                        continue
+                    if isinstance(entries, list):
+                        for entry in entries:
+                            if isinstance(entry, dict) and 'current' in entry and entry['current']:
+                                all_temps.append(entry['current'])
+                                label = entry.get('label', sensor_name)
+                                temp_details.append(f"{label}: {entry['current']}°C")
+                
                 if all_temps:
                     context["latest_telemetry"]["avg_temperature_c"] = round(sum(all_temps) / len(all_temps), 1)
+                    context["latest_telemetry"]["temperature_sensors"] = temp_details[:5]  # Top 5 sensors
+                elif info_msg:
+                    context["latest_telemetry"]["temperature"] = info_msg
+                elif has_error:
+                    context["latest_telemetry"]["temperature"] = "Sensor access error"
+                else:
+                    context["latest_telemetry"]["temperature"] = "No sensors detected"
+            else:
+                context["latest_telemetry"]["temperature"] = "Not available"
             
             # Battery summary
             battery = latest.get('battery', {})
@@ -919,6 +774,11 @@ Write each point as a single sentence. Do not repeat instructions or include cod
                 response += f"- Disk: {latest['disk_percent']:.1f}%\n"
             if 'avg_temperature_c' in latest:
                 response += f"- Temperature: {latest['avg_temperature_c']:.1f}°C\n"
+                if 'temperature_sensors' in latest:
+                    for sensor in latest['temperature_sensors'][:3]:
+                        response += f"  • {sensor}\n"
+            elif 'temperature' in latest:
+                response += f"- Temperature: {latest['temperature']}\n"
             if 'network_sent_mb' in latest and 'network_recv_mb' in latest:
                 response += f"- Network: {latest['network_sent_mb']:.1f} MB sent, {latest['network_recv_mb']:.1f} MB received\n"
             if 'power' in latest:
@@ -1014,7 +874,7 @@ Write each point as a single sentence. Do not repeat instructions or include cod
         else:
             # Limit context to latest snapshot and summary stats only
             context_str = json.dumps(context, indent=1, default=str)
-            # Truncate if too long (keep first 2000 chars for small models)
+            # Truncate while allowing more system data
             if len(context_str) > 2000:
                 context_str = context_str[:2000] + "... (truncated)"
         
@@ -1063,9 +923,9 @@ IMPORTANT: Format your response as plain markdown (not in code blocks). Use mark
                 with self._llm_lock:  # Prevent concurrent access to model
                     response = self.llama_cpp_model(
                         full_prompt,
-                        max_tokens=1000,
-                        temperature=0.7,
-                        stop=["\n\n\n", "Human:", "User:"],
+                        max_tokens=500,  # More tokens for complete chat responses
+                        temperature=0.6,  # Balanced for conversational responses
+                        stop=["\n\n\n", "Human:", "User:", "Question:", "\n\nData:", "\n\nSystem:", "---"],
                         echo=False
                     )
                 # Handle llama-cpp-python response format (same as Linux - keep it simple)
