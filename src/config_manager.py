@@ -30,8 +30,8 @@ class ConfigManager:
         return {
             "first_run": True,
             "llm": {
-                "provider": "ollama",
-                "model": None
+                "provider": "docker",
+                "model": "ai/gemma3"
             },
             "monitoring": {
                 "default_duration": 60,

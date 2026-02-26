@@ -1,7 +1,7 @@
 """
 LLM Integration for Telemetry Analysis
 Provides natural language explanations and insights using LLMs
-Supports Ollama API, OpenAI, Anthropic, and local llama-cpp-python models
+Supports Docker Model Runner, Ollama API, OpenAI, Anthropic, and local llama-cpp-python models
 """
 import os
 import subprocess
@@ -21,6 +21,10 @@ class LLMAnalyzer:
         self.model_path = model_path
         self.api_key = None
         self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        # Docker Model Runner uses an OpenAI-compatible API on port 12434
+        self.docker_model_runner_base_url = os.getenv(
+            "DOCKER_MODEL_RUNNER_URL", "http://localhost:12434/engines/llama.cpp/v1"
+        )
         self.llama_cpp_model = None
         self.client = None  # Initialize client to None
         # Thread lock for llama-cpp models (not thread-safe)
@@ -30,6 +34,7 @@ class LLMAnalyzer:
     def _get_default_model(self) -> str:
         """Get default model based on provider"""
         defaults = {
+            "docker": "ai/gemma3:latest",
             "ollama": "llama3.2",
             "llamacpp": "gemma3-1b.gguf",
             "openai": "gpt-4o-mini",
@@ -39,7 +44,41 @@ class LLMAnalyzer:
     
     def _setup_client(self):
         """Setup the LLM client"""
-        if self.provider == "ollama":
+        if self.provider == "docker":
+            # Docker Model Runner — OpenAI-compatible REST API on localhost:12434
+            try:
+                response = requests.get(
+                    f"{self.docker_model_runner_base_url}/models", timeout=5
+                )
+                if response.status_code == 200:
+                    models = response.json().get("data", [])
+                    model_ids = [m.get("id", "") for m in models]
+                    self.client = "docker"
+                    # Match requested model against available models
+                    if model_ids:
+                        matched = False
+                        for mid in model_ids:
+                            # Match e.g. "ai/gemma3" against "docker.io/ai/gemma3:latest"
+                            if self.model in mid or mid.endswith(self.model):
+                                self.model = mid
+                                matched = True
+                                break
+                        if not matched:
+                            # Use first available model if requested one not found
+                            print(f"Warning: Model '{self.model}' not found in Docker Model Runner. Available: {model_ids}")
+                            self.model = model_ids[0]
+                    print(f"[OK] Docker Model Runner connected: {self.model}")
+                else:
+                    print(f"Warning: Docker Model Runner returned status {response.status_code}")
+                    self.client = None
+            except requests.exceptions.ConnectionError:
+                print("Warning: Docker Model Runner not reachable. Is it enabled in Docker Desktop?")
+                print(f"  Tried: {self.docker_model_runner_base_url}/models")
+                self.client = None
+            except Exception as e:
+                print(f"Error connecting to Docker Model Runner: {e}")
+                self.client = None
+        elif self.provider == "ollama":
             # Try using the ollama Python library first
             try:
                 import ollama
@@ -259,7 +298,21 @@ class LLMAnalyzer:
     
     def is_available(self) -> bool:
         """Check if LLM is available"""
-        if self.provider == "llamacpp":
+        if self.provider == "docker":
+            if self.client == "docker":
+                return True
+            # Try to reach Docker Model Runner
+            try:
+                response = requests.get(
+                    f"{self.docker_model_runner_base_url}/models", timeout=3
+                )
+                if response.status_code == 200:
+                    self.client = "docker"
+                    return True
+            except:
+                pass
+            return False
+        elif self.provider == "llamacpp":
             # For llamacpp, just check if model is loaded (client might not be set yet)
             return self.llama_cpp_model is not None
         elif self.provider == "ollama":
@@ -284,7 +337,9 @@ class LLMAnalyzer:
         """Get information about the current model"""
         if not self.is_available():
             return "LLM not available"
-        if self.provider == "ollama":
+        if self.provider == "docker":
+            return f"Docker Model Runner: {self.model}"
+        elif self.provider == "ollama":
             return f"Ollama: {self.model}" if self.model else "Ollama: No model selected"
         elif self.provider == "openai":
             return f"OpenAI: {self.model}"
@@ -292,6 +347,31 @@ class LLMAnalyzer:
             return f"Anthropic: {self.model}"
         return f"{self.provider}: {self.model}"
     
+    def _docker_model_runner_chat(self, prompt: str, system_message: str = "You are a system monitoring expert analyzing telemetry data.",
+                                   temperature: float = 0.7, max_tokens: int = 1000) -> str:
+        """Send a chat completion request to Docker Model Runner (OpenAI-compatible API)"""
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": temperature,
+            "max_tokens": max_tokens
+        }
+        response = requests.post(
+            f"{self.docker_model_runner_base_url}/chat/completions",
+            json=payload,
+            timeout=120
+        )
+        if response.status_code == 200:
+            data = response.json()
+            result = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            return result.strip() if result else "Error: Empty response from Docker Model Runner"
+        else:
+            error_text = response.text[:300] if hasattr(response, "text") else str(response.status_code)
+            return f"Error: Docker Model Runner returned status {response.status_code}: {error_text}"
+
     def explain_anomalies(self, telemetry_data: List[Dict[str, Any]], 
                          analysis: Dict[str, Any],
                          system_info: Dict[str, Any] = None) -> str:
@@ -325,7 +405,9 @@ Please provide:
 Keep the response concise and actionable."""
 
         try:
-            if self.provider == "llamacpp" and self.llama_cpp_model:
+            if self.provider == "docker":
+                return self._docker_model_runner_chat(prompt, temperature=0.5, max_tokens=1000)
+            elif self.provider == "llamacpp" and self.llama_cpp_model:
                 # Use llama-cpp-python for local inference (thread-safe with lock)
                 # Note: prompt already includes system role
                 full_prompt = prompt
@@ -441,7 +523,9 @@ Format your response as four numbered points:
 Write each point as a single sentence. Do not repeat instructions or include code blocks."""
 
         try:
-            if self.provider == "llamacpp" and self.llama_cpp_model:
+            if self.provider == "docker":
+                return self._docker_model_runner_chat(prompt, temperature=0.4, max_tokens=1000)
+            elif self.provider == "llamacpp" and self.llama_cpp_model:
                 # Use llama-cpp-python for local inference (thread-safe with lock)
                 # Note: prompt already includes system role
                 full_prompt = prompt
@@ -916,7 +1000,9 @@ Provide a clear, accurate answer based on the data. Reference specific values wh
 IMPORTANT: Format your response as plain markdown (not in code blocks). Use markdown formatting directly (headers, lists, bold, etc.) without wrapping in ```markdown code blocks."""
 
         try:
-            if self.provider == "llamacpp" and self.llama_cpp_model:
+            if self.provider == "docker":
+                return self._docker_model_runner_chat(prompt, temperature=0.6, max_tokens=1000)
+            elif self.provider == "llamacpp" and self.llama_cpp_model:
                 # Use llama-cpp-python for local inference (thread-safe with lock)
                 # Note: prompt already includes system role, so we don't need to add it again
                 full_prompt = prompt

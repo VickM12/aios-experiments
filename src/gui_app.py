@@ -32,22 +32,38 @@ class TelemetryGUI:
         self.analyzer = TelemetryAnalyzer()
         self.visualizer = TelemetryVisualizer()
         # Load LLM config from preferences or use provided/env vars
-        provider = llm_provider or self.config.get_llm_provider() or os.getenv("LLM_PROVIDER", "ollama")
+        provider = llm_provider or self.config.get_llm_provider() or os.getenv("LLM_PROVIDER", "docker")
         model = llm_model or self.config.get_llm_model() or os.getenv("LLM_MODEL", None)
         
-        # Auto-detect local model - prefer local models if they exist
-        # This overrides config if a local model is found (better performance)
-        models_dir = Path(__file__).parent.parent / "models"
-        if models_dir.exists():
-            gguf_files = list(models_dir.glob("*.gguf"))
-            if gguf_files:
-                # Found local model, prefer llamacpp (unless explicitly set to something else)
-                if not llm_provider and not os.getenv("LLM_PROVIDER"):
-                    provider = "llamacpp"
-                    if not model:
-                        # Use the first .gguf file found
-                        model = gguf_files[0].name
-                        print(f"Auto-detected local model: {model}, using llamacpp provider")
+        # Auto-detect Docker Model Runner first, then fall back to local models
+        if not llm_provider and not os.getenv("LLM_PROVIDER"):
+            try:
+                import requests as _req
+                docker_url = os.getenv("DOCKER_MODEL_RUNNER_URL", "http://localhost:12434/engines/llama.cpp/v1")
+                _resp = _req.get(f"{docker_url}/models", timeout=3)
+                if _resp.status_code == 200:
+                    _models = _resp.json().get("data", [])
+                    if _models:
+                        provider = "docker"
+                        if not model:
+                            model = _models[0].get("id", "ai/gemma3")
+                        print(f"Auto-detected Docker Model Runner with model: {model}")
+            except Exception:
+                pass  # Docker Model Runner not available, continue with other providers
+        
+        # Fall back to local GGUF models if Docker Model Runner not detected
+        if provider != "docker":
+            models_dir = Path(__file__).parent.parent / "models"
+            if models_dir.exists():
+                gguf_files = list(models_dir.glob("*.gguf"))
+                if gguf_files:
+                    # Found local model, prefer llamacpp (unless explicitly set to something else)
+                    if not llm_provider and not os.getenv("LLM_PROVIDER"):
+                        provider = "llamacpp"
+                        if not model:
+                            # Use the first .gguf file found
+                            model = gguf_files[0].name
+                            print(f"Auto-detected local model: {model}, using llamacpp provider")
         
         self.llm_analyzer = LLMAnalyzer(provider=provider, model=model)
         self.telemetry_history = []
@@ -88,7 +104,21 @@ class TelemetryGUI:
     
     def get_available_models(self, provider: str) -> List[str]:
         """Get list of available models for a provider"""
-        if provider == "ollama":
+        if provider == "docker":
+            # Query Docker Model Runner for available models
+            try:
+                import requests
+                docker_url = os.getenv("DOCKER_MODEL_RUNNER_URL", "http://localhost:12434/engines/llama.cpp/v1")
+                response = requests.get(f"{docker_url}/models", timeout=5)
+                if response.status_code == 200:
+                    models = response.json().get('data', [])
+                    model_ids = [m.get('id', '') for m in models if m.get('id')]
+                    if model_ids:
+                        return model_ids
+            except:
+                pass
+            return ["ai/gemma3"]
+        elif provider == "ollama":
             try:
                 import requests
                 response = requests.get("http://localhost:11434/api/tags", timeout=2)
@@ -1309,7 +1339,7 @@ class TelemetryGUI:
                     
                     with gr.Row():
                         llm_provider_dropdown = gr.Dropdown(
-                            choices=["ollama", "llamacpp", "openai", "anthropic"],
+                            choices=["docker", "ollama", "llamacpp", "openai", "anthropic"],
                             value=self.llm_analyzer.provider,
                             label="Provider",
                             interactive=True
@@ -2105,8 +2135,8 @@ def main():
     
     parser = argparse.ArgumentParser(description="AIOS Telemetry GUI")
     parser.add_argument("--llm-provider", default=None, 
-                       choices=["ollama", "llamacpp", "openai", "anthropic"],
-                       help="LLM provider to use (default: ollama, or LLM_PROVIDER env var)")
+                       choices=["docker", "ollama", "llamacpp", "openai", "anthropic"],
+                       help="LLM provider to use (default: docker for Docker Model Runner, or LLM_PROVIDER env var)")
     parser.add_argument("--llm-model", default=None,
                        help="LLM model name (e.g., 'gemma3-1b.gguf' for llamacpp)")
     parser.add_argument("--no-archive", action="store_true",

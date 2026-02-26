@@ -1,0 +1,27 @@
+# Don't copy large model files into the Docker image
+# (Docker Model Runner serves the models externally)
+models/*.gguf
+
+# Python artifacts
+__pycache__
+*.pyc
+*.pyo
+.venv
+venv
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+.cursor
+
+# Archives (mounted as volume instead)
+telemetry_archive/
+
+# OS files
+Thumbs.db
+.DS_Store
+
