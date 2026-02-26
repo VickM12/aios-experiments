@@ -41,11 +41,7 @@ source .venv/bin/activate  # On Linux/Mac
 pip install -r requirements.txt
 ```
 
-3. (Optional) Download a local model for offline use:
-```bash
-# Download gemma3:1b model from Ollama and save locally
-python scripts/download_model.py --model gemma3:1b
-```
+3. (Optional) Set up an LLM provider — see [LLM Setup](#llm-setup) below.
 
 4. Run the application:
 ```bash
@@ -62,7 +58,8 @@ AIOS-experiment/
 │   ├── gui_app.py         # Gradio GUI application
 │   ├── telemetry_collector.py
 │   ├── ai_analyzer.py
-│   ├── llm_analyzer.py    # LLM integration (Ollama, OpenAI, Anthropic, llama-cpp)
+│   ├── llm_analyzer.py    # LLM integration (Docker, Ollama, OpenAI, Anthropic, llama-cpp)
+│   ├── config_manager.py  # User preferences and configuration
 │   ├── visualizer.py
 │   ├── anomaly_predictor.py
 │   ├── os_integration.py
@@ -71,10 +68,13 @@ AIOS-experiment/
 ├── models/                 # Local model files (GGUF format)
 │   └── .gitkeep
 ├── scripts/                # Utility scripts
-│   └── download_model.py  # Download models from Ollama
+│   └── download_gemma3_1b.py  # Download Gemma 3 1B from Hugging Face
 ├── telemetry_archive/     # Archived telemetry sessions
 ├── app.py                 # Entry point for CLI
 ├── gui.py                 # Entry point for GUI
+├── Dockerfile             # Container build for the app
+├── docker-compose.yml     # Docker Compose orchestration
+├── config.json            # Runtime configuration
 ├── requirements.txt
 └── README.md
 ```
@@ -203,6 +203,96 @@ Note: Some features may be limited on Windows:
 - Fan speeds (if not exposed via psutil)
 - RAPL power monitoring (Linux only)
 - Some temperature sensors (depends on hardware/drivers)
+
+## LLM Setup
+
+The app supports multiple LLM providers for natural language analysis. Choose the one that fits your setup.
+
+### Option 1: Docker Model Runner (recommended) *CURRENTLY ONLY ON A FEATURE BRANCH: feat/dockerize*
+
+Use Docker Desktop's built-in Model Runner to serve models locally via an OpenAI-compatible API.
+
+1. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) (v4.40+).
+2. Enable Model Runner: **Settings > AI > Enable Docker Model Runner**.
+3. Pull a model:
+
+```bash
+docker model pull ai/gemma3:latest
+```
+
+4. Run the app — it auto-detects Docker Model Runner on `localhost:12434`:
+
+```bash
+python gui.py
+```
+
+**Troubleshooting on laptops with limited GPU VRAM:** If the model fails to load with a Vulkan or CUDA memory error, rename the Vulkan DLL to force pure CPU inference:
+
+```powershell
+# Windows — disable Vulkan so llama.cpp falls back to CPU
+Rename-Item "$env:USERPROFILE\.docker\bin\inference\ggml-vulkan.dll" "ggml-vulkan.dll.disabled"
+```
+
+To re-enable Vulkan later, rename it back.
+
+### Option 2: Local GGUF Model with llama-cpp-python
+
+Download a quantized GGUF model from Hugging Face and run it locally with `llama-cpp-python` (no server needed).
+
+1. Get a [Hugging Face access token](https://huggingface.co/settings/tokens) and accept the [Gemma license](https://huggingface.co/google/gemma-3-1b-it).
+2. Set your token:
+
+```bash
+# Windows PowerShell
+$env:HF_TOKEN="hf_your_token_here"
+
+# Linux / macOS
+export HF_TOKEN="hf_your_token_here"
+```
+
+3. Run the download script:
+
+```bash
+python scripts/download_gemma3_1b.py
+```
+
+This downloads `gemma3-1b-it-Q8_0.gguf` (~1.1 GB, best quality for the 1B model) into the `models/` directory. Other quantizations are available from the [bartowski/google_gemma-3-1b-it-GGUF](https://huggingface.co/bartowski/google_gemma-3-1b-it-GGUF) repo (Q4_K_M ~700 MB, Q6_K_L ~900 MB, F16 ~2 GB).
+
+4. Run the app with the local model:
+
+```bash
+python gui.py --llm-provider llamacpp --llm-model gemma3-1b-it-Q8_0.gguf
+```
+
+Or configure it once in the GUI **Settings** tab (Provider: `llamacpp`, Model: `gemma3-1b-it-Q8_0.gguf`). The app also auto-detects `.gguf` files in the `models/` directory.
+
+### Option 3: Ollama
+
+1. Install [Ollama](https://ollama.com/) and pull a model:
+
+```bash
+ollama pull llama3.2
+```
+
+2. Run the app:
+
+```bash
+python gui.py --llm-provider ollama
+```
+
+### Option 4: Cloud APIs (OpenAI / Anthropic)
+
+Set your API key as an environment variable and specify the provider:
+
+```bash
+# OpenAI
+export OPENAI_API_KEY="sk-..."
+python gui.py --llm-provider openai
+
+# Anthropic
+export ANTHROPIC_API_KEY="sk-ant-..."
+python gui.py --llm-provider anthropic
+```
 
 ## GUI Application
 
